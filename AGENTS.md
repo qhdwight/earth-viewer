@@ -7,6 +7,8 @@
 - Prefer highly linear and greppable code
 - Never use any third-party library. This includes the standard C/C++ library besides random, atomic, cstdio, cstdint
 - Platform-specific libraries like WIN32 and Vulkan are okay, but prefer the C version over C++
+- No control flow is allowed inside macros
+- Use const always when possible. Even for things not passed by reference
 ## Style
 - For constants or enum entries, use lower camel case and prefix with k, i.e., kMyConstant
 - For functions, use upper camel case, i.e., MyFunction

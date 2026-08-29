@@ -190,7 +190,7 @@
   "moduleExtensions": {
     "//third_party/vulkan:extensions.bzl%vulkan": {
       "general": {
-        "bzlTransitiveDigest": "lLAueOKh5+9sBt1Try1U9YjUtNGxrRKIfopUa9+WJA0=",
+        "bzlTransitiveDigest": "PF/swGF/976DY9h6kQMRxYYVPFpA7Zm9+L/epM9vN4k=",
         "usagesDigest": "rR5ZD+5XLVfDslCJZc4Lb937yjIg5YGPZrHBjAefUb0=",
         "recordedInputs": [],
         "generatedRepoSpecs": {

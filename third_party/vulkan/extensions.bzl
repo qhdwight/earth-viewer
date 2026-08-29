@@ -21,6 +21,12 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [":loader"],
 )
+
+filegroup(
+    name = "glslang",
+    srcs = ["bin/glslangValidator.exe"],
+    visibility = ["//visibility:public"],
+)
 """
 
 _BUILD_UNIX = """\
@@ -39,6 +45,12 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "glslang",
+    srcs = ["bin/glslangValidator"],
+    visibility = ["//visibility:public"],
+)
 """
 
 def _vulkan_repo_impl(rctx):
@@ -55,12 +67,14 @@ def _vulkan_repo_impl(rctx):
     # The SDK capitalises directories differently per platform.
     include_dir = sdk_path.get_child("Include" if windows else "include")
     lib_dir = sdk_path.get_child("Lib" if windows else "lib")
+    bin_dir = sdk_path.get_child("Bin" if windows else "bin")
 
     if not include_dir.exists:
         fail("No Vulkan headers at %s" % include_dir)
 
     rctx.symlink(include_dir, "include")
     rctx.symlink(lib_dir, "lib")
+    rctx.symlink(bin_dir, "bin")
 
     if windows:
         rctx.file("BUILD.bazel", _BUILD_WINDOWS)

@@ -1,13 +1,36 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//third_party/vulkan:glsl.bzl", "glsl_header")
 
 cc_library(
     name = "core",
     hdrs = ["core.h"],
 )
 
+glsl_header(
+    name = "triangle_vert",
+    src = "triangle.vert",
+    variable = "kTriangleVert",
+)
+
+glsl_header(
+    name = "triangle_frag",
+    src = "triangle.frag",
+    variable = "kTriangleFrag",
+)
+
 cc_binary(
     name = "vulkan_info",
-    srcs = ["main.cc"],
+    srcs = [
+        "main.cc",
+        ":triangle_frag",
+        ":triangle_vert",
+    ],
+    linkopts = select({
+        "@platforms//os:windows": [
+            "/DEFAULTLIB:user32.lib",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":core",
         "@vulkan",

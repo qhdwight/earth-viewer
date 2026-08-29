@@ -13,15 +13,15 @@
 
 #include <cstdio>
 
-[[noreturn]] static void Die(char const *what, I64 code) {
+[[noreturn]] static void Die(char const *what, const I64 code) {
     printf("%s failed (%lld)\n", what, code);
     ExitProcess(1);
 }
 
 #define VK_CHECK(expr)                                                    \
   do {                                                                    \
-    if (VkResult vk_check_result = (expr); vk_check_result != VK_SUCCESS) \
-      Die(#expr, vk_check_result);                                        \
+    if (VkResult vkCheckResult = (expr); vkCheckResult != VK_SUCCESS) \
+      Die(#expr, vkCheckResult);                                        \
   } while (0)
 
 constexpr char const *kAppName = "rct";
@@ -56,60 +56,62 @@ constexpr VkClearColorValue kClearColor = {.float32 = {0.05f, 0.05f, 0.08f, 1.0f
 struct Renderer {
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    U32 queue_family = 0;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    U32 queueFamily = 0;
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
-    U32 image_count = 0;
+    U32 imageCount = 0;
     VkImage images[kMaxImages]{};
     VkImageView views[kMaxImages]{};
-    VkSemaphore render_done[kMaxImages]{};
+    VkSemaphore renderDone[kMaxImages]{};
 
     VkSemaphore acquire = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
 };
 
-Renderer r;
+static Renderer r;
 
 static void CreateSwapchain() {
     vkDeviceWaitIdle(r.device);
-    for (U32 i = 0; i < r.image_count; ++i) {
+    for (U32 i = 0; i < r.imageCount; ++i) {
         vkDestroyImageView(r.device, r.views[i], nullptr);
-        vkDestroySemaphore(r.device, r.render_done[i], nullptr);
+        vkDestroySemaphore(r.device, r.renderDone[i], nullptr);
     }
 
     VkSurfaceCapabilitiesKHR caps;
-    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(r.physical_device,
-        r.surface, &caps));
+    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(r.physicalDevice, r.surface, &caps));
     r.extent = caps.currentExtent;
 
     VkSurfaceFormatKHR formats[kMaxFormats];
-    U32 format_count = kMaxFormats;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(r.physical_device, r.surface,
-                                         &format_count, formats);
+    U32 formatCount = kMaxFormats;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(r.physicalDevice, r.surface, &formatCount, formats);
     VkSurfaceFormatKHR chosen = formats[0];
-    for (U32 i = 0; i < format_count; ++i)
-        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-            formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            chosen = formats[i];
+    for (U32 iFormat = 0; iFormat < formatCount; ++iFormat) {
+        if (formats[iFormat].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            formats[iFormat].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            chosen = formats[iFormat];
+        }
+    }
     r.format = chosen.format;
 
-    U32 min_images = caps.minImageCount + 1;
-    if (caps.maxImageCount != 0) min_images = Min(min_images, caps.maxImageCount);
+    U32 minImages = caps.minImageCount + 1;
+    if (caps.maxImageCount != 0) {
+        minImages = Min(minImages, caps.maxImageCount);
+    }
 
-    VkSwapchainKHR old_swapchain = r.swapchain;
-    VkSwapchainCreateInfoKHR info = {
+    VkSwapchainKHR oldSwapchain = r.swapchain;
+    const VkSwapchainCreateInfoKHR info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = r.surface,
-        .minImageCount = min_images,
+        .minImageCount = minImages,
         .imageFormat = chosen.format,
         .imageColorSpace = chosen.colorSpace,
         .imageExtent = r.extent,
@@ -120,15 +122,15 @@ static void CreateSwapchain() {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = VK_PRESENT_MODE_FIFO_KHR,
         .clipped = VK_TRUE,
-        .oldSwapchain = old_swapchain,
+        .oldSwapchain = oldSwapchain,
     };
     VK_CHECK(vkCreateSwapchainKHR(r.device, &info, nullptr, &r.swapchain));
-    vkDestroySwapchainKHR(r.device, old_swapchain, nullptr);
+    vkDestroySwapchainKHR(r.device, oldSwapchain, nullptr);
 
-    r.image_count = kMaxImages;
+    r.imageCount = kMaxImages;
     VK_CHECK(
-        vkGetSwapchainImagesKHR(r.device, r.swapchain, &r.image_count, r.images));
-    for (U32 i = 0; i < r.image_count; ++i) {
+        vkGetSwapchainImagesKHR(r.device, r.swapchain, &r.imageCount, r.images));
+    for (U32 i = 0; i < r.imageCount; ++i) {
         VkImageViewCreateInfo view = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = r.images[i],
@@ -139,62 +141,64 @@ static void CreateSwapchain() {
         VK_CHECK(vkCreateImageView(r.device, &view, nullptr, &r.views[i]));
 
         VkSemaphoreCreateInfo sem = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VK_CHECK(vkCreateSemaphore(r.device, &sem, nullptr, &r.render_done[i]));
+        VK_CHECK(vkCreateSemaphore(r.device, &sem, nullptr, &r.renderDone[i]));
     }
 }
 
 static void InitVulkan(HWND hwnd) {
-    VkApplicationInfo app = {
+    constexpr VkApplicationInfo kApp = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = kAppName,
         .apiVersion = VK_API_VERSION_1_4,
     };
 
-    char const *instance_extensions[] = {
+    constexpr char const *kInstanceExtensions[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
     };
-    VkInstanceCreateInfo instance_info = {
+    const VkInstanceCreateInfo instanceInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &app,
-        .enabledExtensionCount = 2,
-        .ppEnabledExtensionNames = instance_extensions,
+        .pApplicationInfo = &kApp,
+        .enabledExtensionCount = Count(kInstanceExtensions),
+        .ppEnabledExtensionNames = kInstanceExtensions,
     };
-    VK_CHECK(vkCreateInstance(&instance_info, nullptr, &r.instance));
+    VK_CHECK(vkCreateInstance(&instanceInfo, nullptr, &r.instance));
 
-    VkWin32SurfaceCreateInfoKHR surface_info = {
+    const VkWin32SurfaceCreateInfoKHR surfaceInfo = {
         .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
         .hinstance = GetModuleHandleW(nullptr),
         .hwnd = hwnd,
     };
-    VK_CHECK(
-        vkCreateWin32SurfaceKHR(r.instance, &surface_info, nullptr, &r.surface));
+    VK_CHECK(vkCreateWin32SurfaceKHR(r.instance, &surfaceInfo, nullptr, &r.surface));
 
     // Pick the first physical device that speaks Vulkan 1.4 and can both draw
     // and present on one queue family.
     VkPhysicalDevice devices[kMaxDevices];
-    U32 device_count = kMaxDevices;
-    vkEnumeratePhysicalDevices(r.instance, &device_count, devices);
-    for (U32 i = 0; i < device_count && !r.physical_device; ++i) {
+    U32 deviceCount = kMaxDevices;
+    vkEnumeratePhysicalDevices(r.instance, &deviceCount, devices);
+    for (U32 iDevice = 0; iDevice < deviceCount && !r.physicalDevice; ++iDevice) {
         VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(devices[i], &props);
-        if (props.apiVersion < VK_API_VERSION_1_4) continue;
+        vkGetPhysicalDeviceProperties(devices[iDevice], &props);
+        if (props.apiVersion < VK_API_VERSION_1_4) {
+            continue;
+        }
 
         VkQueueFamilyProperties families[kMaxQueueFamilies];
-        U32 family_count = kMaxQueueFamilies;
-        vkGetPhysicalDeviceQueueFamilyProperties(devices[i], &family_count,
-                                                 families);
-        for (U32 f = 0; f < family_count; ++f) {
-            if ((families[f].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
-                vkGetPhysicalDeviceWin32PresentationSupportKHR(devices[i], f)) {
-                r.physical_device = devices[i];
-                r.queue_family = f;
-                printf("Using %s\n", props.deviceName);
-                break;
+        U32 familyCount = kMaxQueueFamilies;
+        vkGetPhysicalDeviceQueueFamilyProperties(devices[iDevice], &familyCount, families);
+        for (U32 iFamily = 0; iFamily < familyCount; ++iFamily) {
+            if (!(families[iFamily].queueFlags & VK_QUEUE_GRAPHICS_BIT) ||
+                !vkGetPhysicalDeviceWin32PresentationSupportKHR(devices[iDevice], iFamily)) {
+                continue;
             }
+
+            r.physicalDevice = devices[iDevice];
+            r.queueFamily = iFamily;
+            printf("Using %s\n", props.deviceName);
+            break;
         }
     }
-    if (!r.physical_device) Die("finding a Vulkan 1.4 device", 0);
+    if (!r.physicalDevice) Die("finding a Vulkan 1.4 device", 0);
 
     VkPhysicalDeviceVulkan13Features features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -207,125 +211,124 @@ static void InitVulkan(HWND hwnd) {
         .maintenance5 = VK_TRUE,
     };
 
-    F32 const priority = kQueuePriority;
-    VkDeviceQueueCreateInfo queue_info = {
+    const VkDeviceQueueCreateInfo queueInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = r.queue_family,
+        .queueFamilyIndex = r.queueFamily,
         .queueCount = 1,
-        .pQueuePriorities = &priority,
+        .pQueuePriorities = &kQueuePriority,
     };
 
-    char const *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    VkDeviceCreateInfo device_info = {
+    constexpr char const *kDeviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const VkDeviceCreateInfo deviceInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features14,
         .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queue_info,
+        .pQueueCreateInfos = &queueInfo,
         .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = device_extensions,
+        .ppEnabledExtensionNames = kDeviceExtensions,
     };
-    VK_CHECK(vkCreateDevice(r.physical_device, &device_info, nullptr, &r.device));
-    vkGetDeviceQueue(r.device, r.queue_family, 0, &r.queue);
+    VK_CHECK(vkCreateDevice(r.physicalDevice, &deviceInfo, nullptr, &r.device));
+    vkGetDeviceQueue(r.device, r.queueFamily, 0, &r.queue);
 
-    VkSemaphoreCreateInfo sem = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VK_CHECK(vkCreateSemaphore(r.device, &sem, nullptr, &r.acquire));
-    VkFenceCreateInfo fence_info = {
+    constexpr VkSemaphoreCreateInfo kSemInfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VK_CHECK(vkCreateSemaphore(r.device, &kSemInfo, nullptr, &r.acquire));
+    constexpr VkFenceCreateInfo kFenceInfo = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    VK_CHECK(vkCreateFence(r.device, &fence_info, nullptr, &r.fence));
+    VK_CHECK(vkCreateFence(r.device, &kFenceInfo, nullptr, &r.fence));
 
-    VkCommandPoolCreateInfo pool_info = {
+    const VkCommandPoolCreateInfo poolInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = r.queue_family,
+        .queueFamilyIndex = r.queueFamily,
     };
-    VK_CHECK(vkCreateCommandPool(r.device, &pool_info, nullptr, &r.pool));
-    VkCommandBufferAllocateInfo cmd_info = {
+    VK_CHECK(vkCreateCommandPool(r.device, &poolInfo, nullptr, &r.pool));
+    const VkCommandBufferAllocateInfo cmdInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = r.pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
-    VK_CHECK(vkAllocateCommandBuffers(r.device, &cmd_info, &r.cmd));
+    VK_CHECK(vkAllocateCommandBuffers(r.device, &cmdInfo, &r.cmd));
 
     CreateSwapchain();
 }
 
 static void CreatePipeline() {
-    VkPipelineLayoutCreateInfo layout_info = {
+    constexpr VkPipelineLayoutCreateInfo kLayoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     };
-    VK_CHECK(vkCreatePipelineLayout(r.device, &layout_info, nullptr,
-        &r.pipeline_layout));
+    VK_CHECK(vkCreatePipelineLayout(r.device, &kLayoutInfo, nullptr, &r.pipelineLayout));
 
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
-    VkShaderModuleCreateInfo vert_code = {
+    const VkShaderModuleCreateInfo vertCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(kTriangleVert),
         .pCode = kTriangleVert,
     };
-    VkShaderModuleCreateInfo frag_code = {
+    const VkShaderModuleCreateInfo fragCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(kTriangleFrag),
         .pCode = kTriangleFrag,
     };
 
-    VkPipelineShaderStageCreateInfo stages[2] = {
+    const VkPipelineShaderStageCreateInfo stages[] = {
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pNext = &vert_code,
+            .pNext = &vertCode,
             .stage = VK_SHADER_STAGE_VERTEX_BIT,
             .pName = "main",
         },
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .pNext = &frag_code,
+            .pNext = &fragCode,
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .pName = "main",
         },
     };
 
-    VkPipelineVertexInputStateCreateInfo vertex_input = {
+    constexpr VkPipelineVertexInputStateCreateInfo kVertexInput = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     };
-    VkPipelineInputAssemblyStateCreateInfo assembly = {
+    constexpr VkPipelineInputAssemblyStateCreateInfo kAssembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
-    VkPipelineViewportStateCreateInfo viewport = { // counts are dynamic
+    constexpr VkPipelineViewportStateCreateInfo kViewport = {
+        // counts are dynamic
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
     };
-    VkPipelineRasterizationStateCreateInfo raster = {
+    constexpr VkPipelineRasterizationStateCreateInfo kRaster = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
         .lineWidth = kLineWidth,
     };
-    VkPipelineMultisampleStateCreateInfo multisample = {
+    constexpr VkPipelineMultisampleStateCreateInfo kMultisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
-    VkPipelineColorBlendAttachmentState blend_attachment = {
+    constexpr VkPipelineColorBlendAttachmentState kBlendAttachment = {
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
-    VkPipelineColorBlendStateCreateInfo blend = {
+    const VkPipelineColorBlendStateCreateInfo blend = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1,
-        .pAttachments = &blend_attachment,
+        .pAttachments = &kBlendAttachment,
     };
 
     // Viewport and scissor stay dynamic so a resize never rebuilds the
     // pipeline (extended dynamic state, core 1.3).
-    VkDynamicState dynamic_states[] = {
+    constexpr VkDynamicState kDynamicStates[] = {
         VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
         VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
     };
-    VkPipelineDynamicStateCreateInfo dynamic = {
+    const VkPipelineDynamicStateCreateInfo dynamic = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2,
-        .pDynamicStates = dynamic_states,
+        .pDynamicStates = kDynamicStates,
     };
 
     // Dynamic rendering (core 1.3): no VkRenderPass, no VkFramebuffer.
@@ -335,41 +338,40 @@ static void CreatePipeline() {
         .pColorAttachmentFormats = &r.format,
     };
 
-    VkGraphicsPipelineCreateInfo pipeline_info = {
+    const VkGraphicsPipelineCreateInfo pipelineInfo = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = &rendering,
         .stageCount = 2,
         .pStages = stages,
-        .pVertexInputState = &vertex_input,
-        .pInputAssemblyState = &assembly,
-        .pViewportState = &viewport,
-        .pRasterizationState = &raster,
-        .pMultisampleState = &multisample,
+        .pVertexInputState = &kVertexInput,
+        .pInputAssemblyState = &kAssembly,
+        .pViewportState = &kViewport,
+        .pRasterizationState = &kRaster,
+        .pMultisampleState = &kMultisample,
         .pColorBlendState = &blend,
         .pDynamicState = &dynamic,
-        .layout = r.pipeline_layout,
+        .layout = r.pipelineLayout,
     };
-    VK_CHECK(vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1,
-        &pipeline_info, nullptr, &r.pipeline));
+    VK_CHECK(vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &r.pipeline));
 }
 
-static void TransitionImage(VkImage image, VkImageLayout from, VkImageLayout to,
-                     VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                     VkPipelineStageFlags2 dst_stage,
-                     VkAccessFlags2 dst_access) {
+static void TransitionImage(VkImage image, const VkImageLayout from, const VkImageLayout to,
+                            const VkPipelineStageFlags2 srcStage, const VkAccessFlags2 srcAccess,
+                            const VkPipelineStageFlags2 dstStage,
+                            const VkAccessFlags2 dstAccess) {
     // synchronization2 (core 1.3).
-    VkImageMemoryBarrier2 barrier = {
+    const VkImageMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = src_stage,
-        .srcAccessMask = src_access,
-        .dstStageMask = dst_stage,
-        .dstAccessMask = dst_access,
+        .srcStageMask = srcStage,
+        .srcAccessMask = srcAccess,
+        .dstStageMask = dstStage,
+        .dstAccessMask = dstAccess,
         .oldLayout = from,
         .newLayout = to,
         .image = image,
         .subresourceRange = kColorSubresource,
     };
-    VkDependencyInfo dependency = {
+    const VkDependencyInfo dependency = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &barrier,
@@ -381,23 +383,24 @@ static void DrawFrame() {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
 
     U32 image;
-    VkResult acquired = vkAcquireNextImageKHR(r.device, r.swapchain, kWaitForever,
-                                              r.acquire, VK_NULL_HANDLE, &image);
+    const VkResult acquired = vkAcquireNextImageKHR(r.device, r.swapchain, kWaitForever,
+                                                    r.acquire, VK_NULL_HANDLE, &image);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         CreateSwapchain();
         return;
     }
-    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         Die("vkAcquireNextImageKHR", acquired);
+    }
 
     VK_CHECK(vkResetFences(r.device, 1, &r.fence));
     VK_CHECK(vkResetCommandPool(r.device, r.pool, 0));
 
-    VkCommandBufferBeginInfo begin = {
+    constexpr VkCommandBufferBeginInfo kBegin = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    VK_CHECK(vkBeginCommandBuffer(r.cmd, &begin));
+    VK_CHECK(vkBeginCommandBuffer(r.cmd, &kBegin));
 
     TransitionImage(r.images[image], VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -405,17 +408,17 @@ static void DrawFrame() {
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-    VkRenderingAttachmentInfo color = {
+    const VkRenderingAttachmentInfo color = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = r.views[image],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = kClearColor,
+        .clearValue = {kClearColor},
     };
-    VkRenderingInfo rendering = {
+    const VkRenderingInfo rendering = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = {{0, 0}, r.extent},
+        .renderArea = {.offset = {.x = 0, .y = 0}, .extent = r.extent},
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color,
@@ -423,12 +426,13 @@ static void DrawFrame() {
     vkCmdBeginRendering(r.cmd, &rendering);
 
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
-    VkViewport viewport{
-        0.0f, 0.0f, static_cast<F32>(r.extent.width),
-        static_cast<F32>(r.extent.height), 0.0f, 1.0f
+    const VkViewport viewport = {
+        .x = 0.0f, .y = 0.0f,
+        .width = static_cast<F32>(r.extent.width), .height = static_cast<F32>(r.extent.height),
+        .minDepth = 0.0f, .maxDepth = 1.0f
     };
     vkCmdSetViewportWithCount(r.cmd, 1, &viewport);
-    VkRect2D scissor{{0, 0}, r.extent};
+    const VkRect2D scissor{.offset = {.x = 0, .y = 0}, .extent = r.extent};
     vkCmdSetScissorWithCount(r.cmd, 1, &scissor);
     vkCmdDraw(r.cmd, kVerticesPerTriangle, kInstanceCount, 0, 0);
 
@@ -442,47 +446,47 @@ static void DrawFrame() {
 
     VK_CHECK(vkEndCommandBuffer(r.cmd));
 
-    VkCommandBufferSubmitInfo cmd_submit = {
+    const VkCommandBufferSubmitInfo cmdSubmit = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .commandBuffer = r.cmd,
     };
-    VkSemaphoreSubmitInfo wait_info = {
+    const VkSemaphoreSubmitInfo waitInfo = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .semaphore = r.acquire,
         .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
     };
-    VkSemaphoreSubmitInfo signal_info = {
+    const VkSemaphoreSubmitInfo signalInfo = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .semaphore = r.render_done[image],
+        .semaphore = r.renderDone[image],
         .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
     };
-    VkSubmitInfo2 submit = {
+    const VkSubmitInfo2 submit = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .waitSemaphoreInfoCount = 1,
-        .pWaitSemaphoreInfos = &wait_info,
+        .pWaitSemaphoreInfos = &waitInfo,
         .commandBufferInfoCount = 1,
-        .pCommandBufferInfos = &cmd_submit,
+        .pCommandBufferInfos = &cmdSubmit,
         .signalSemaphoreInfoCount = 1,
-        .pSignalSemaphoreInfos = &signal_info,
+        .pSignalSemaphoreInfos = &signalInfo,
     };
     VK_CHECK(vkQueueSubmit2(r.queue, 1, &submit, r.fence));
 
-    VkPresentInfoKHR present = {
+    const VkPresentInfoKHR present = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &r.render_done[image],
+        .pWaitSemaphores = &r.renderDone[image],
         .swapchainCount = 1,
         .pSwapchains = &r.swapchain,
         .pImageIndices = &image,
     };
-    VkResult presented = vkQueuePresentKHR(r.queue, &present);
+    const VkResult presented = vkQueuePresentKHR(r.queue, &present);
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
         CreateSwapchain();
     else if (presented != VK_SUCCESS)
         Die("vkQueuePresentKHR", presented);
 }
 
-static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam) {
     if (msg == WM_DESTROY) {
         PostQuitMessage(0);
         return 0;
@@ -492,7 +496,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 
 int main() {
     HINSTANCE hinstance = GetModuleHandleW(nullptr);
-    WNDCLASSW wc = {
+    const WNDCLASSW wc = {
         .lpfnWndProc = WndProc,
         .hInstance = hinstance,
         .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(kIdcArrow)),

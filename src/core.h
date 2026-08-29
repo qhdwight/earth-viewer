@@ -33,3 +33,6 @@ constexpr I16 Min(const I16 a, const I16 b) { return a < b ? a : b; }
 constexpr I32 Min(const I32 a, const I32 b) { return a < b ? a : b; }
 constexpr I64 Min(const I64 a, const I64 b) { return a < b ? a : b; }
 constexpr F32 Min(const F32 a, const F32 b) { return a < b ? a : b; }
+
+template<typename T, U32 N>
+constexpr U32 Count(const T (&)[N]) { return N; }

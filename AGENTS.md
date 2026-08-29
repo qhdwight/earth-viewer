@@ -13,3 +13,4 @@
 - For constants or enum entries, use lower camel case and prefix with k, i.e., kMyConstant
 - For functions, use upper camel case, i.e., MyFunction
 - For variables, use lower camel case, i.e., myVariable
+- Always use curly braces for loops and if statements

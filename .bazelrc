@@ -1,0 +1,8 @@
+common --enable_platform_specific_config
+
+# The Vulkan repository rule reads VULKAN_SDK; re-fetch when it changes.
+common --repo_env=VULKAN_SDK
+
+build:windows --cxxopt=/std:c++20
+build:linux --cxxopt=-std=c++20
+build:macos --cxxopt=-std=c++20

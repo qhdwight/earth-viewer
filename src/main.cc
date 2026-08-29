@@ -1,7 +1,8 @@
 #include <vulkan/vulkan.h>
 
+#include "core.h"
+
 #include <cstdio>
-#include <vector>
 
 int main() {
   VkApplicationInfo app_info{};
@@ -16,23 +17,26 @@ int main() {
   VkInstance instance = VK_NULL_HANDLE;
   if (VkResult result = vkCreateInstance(&create_info, nullptr, &instance);
       result != VK_SUCCESS) {
-    std::printf("vkCreateInstance failed: %d\n", result);
+    printf("vkCreateInstance failed: %d\n", result);
     return 1;
   }
 
-  uint32_t device_count = 0;
+  U32 device_count = 0;
   vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
-  std::vector<VkPhysicalDevice> devices(device_count);
-  vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
 
-  std::printf("%u physical device(s)\n", device_count);
-  for (VkPhysicalDevice device : devices) {
+  constexpr U32 MaxDevices = 16;
+  VkPhysicalDevice devices[MaxDevices]{};
+  device_count = Min(device_count, MaxDevices);
+  vkEnumeratePhysicalDevices(instance, &device_count, devices);
+
+  printf("%u physical device(s)\n", device_count);
+  for (U32 i = 0; i < device_count; ++i) {
     VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(device, &props);
-    std::printf("  %s (API %u.%u.%u)\n", props.deviceName,
-                VK_API_VERSION_MAJOR(props.apiVersion),
-                VK_API_VERSION_MINOR(props.apiVersion),
-                VK_API_VERSION_PATCH(props.apiVersion));
+    vkGetPhysicalDeviceProperties(devices[i], &props);
+    printf("  %s (API %u.%u.%u)\n", props.deviceName,
+           VK_API_VERSION_MAJOR(props.apiVersion),
+           VK_API_VERSION_MINOR(props.apiVersion),
+           VK_API_VERSION_PATCH(props.apiVersion));
   }
 
   vkDestroyInstance(instance, nullptr);

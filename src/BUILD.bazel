@@ -1,7 +1,15 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+cc_library(
+    name = "core",
+    hdrs = ["core.h"],
+)
 
 cc_binary(
     name = "vulkan_info",
     srcs = ["main.cc"],
-    deps = ["@vulkan"],
+    deps = [
+        ":core",
+        "@vulkan",
+    ],
 )

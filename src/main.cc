@@ -53,6 +53,18 @@ constexpr VkImageSubresourceRange kColorSubresource = {
 };
 constexpr VkClearColorValue kClearColor = {.float32 = {0.05f, 0.05f, 0.08f, 1.0f}};
 
+// Matches the std430 Vertex struct in triangle.vert.
+struct Vertex {
+    F32 position[4];
+    F32 color[4];
+};
+
+constexpr Vertex kTriangleVertices[kVerticesPerTriangle] = {
+    {.position = {0.0f, -0.6f, 0.0f, 1.0f}, .color = {1.0f, 0.0f, 0.0f, 1.0f}},
+    {.position = {0.6f, 0.6f, 0.0f, 1.0f}, .color = {0.0f, 1.0f, 0.0f, 1.0f}},
+    {.position = {-0.6f, 0.6f, 0.0f, 1.0f}, .color = {0.0f, 0.0f, 1.0f, 1.0f}},
+};
+
 struct Renderer {
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -68,6 +80,10 @@ struct Renderer {
     VkImage images[kMaxImages]{};
     VkImageView views[kMaxImages]{};
     VkSemaphore renderDone[kMaxImages]{};
+
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    VkDeviceAddress vertexAddress = 0;
 
     VkSemaphore acquire = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -200,8 +216,13 @@ static void InitVulkan(HWND hwnd) {
     }
     if (!r.physicalDevice) Die("finding a Vulkan 1.4 device", 0);
 
+    VkPhysicalDeviceVulkan12Features features12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .bufferDeviceAddress = VK_TRUE,
+    };
     VkPhysicalDeviceVulkan13Features features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = &features12,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -254,11 +275,76 @@ static void InitVulkan(HWND hwnd) {
     CreateSwapchain();
 }
 
-static void CreatePipeline() {
-    constexpr VkPipelineLayoutCreateInfo kLayoutInfo = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+// Bindless vertex fetch: the vertices live in a plain buffer whose GPU virtual
+// address (VK_KHR_buffer_device_address, core 1.2) is handed to the vertex
+// shader through a push constant. No descriptor sets, no vertex input state.
+static void CreateVertexBuffer() {
+    const VkBufferCreateInfo bufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = sizeof(kTriangleVertices),
+        .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VK_CHECK(vkCreatePipelineLayout(r.device, &kLayoutInfo, nullptr, &r.pipelineLayout));
+    VK_CHECK(vkCreateBuffer(r.device, &bufferInfo, nullptr, &r.vertexBuffer));
+
+    VkMemoryRequirements requirements;
+    vkGetBufferMemoryRequirements(r.device, r.vertexBuffer, &requirements);
+
+    VkPhysicalDeviceMemoryProperties memoryProps;
+    vkGetPhysicalDeviceMemoryProperties(r.physicalDevice, &memoryProps);
+    constexpr VkMemoryPropertyFlags kWanted =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    U32 memoryType = ~0u;
+    for (U32 iType = 0; iType < memoryProps.memoryTypeCount; ++iType) {
+        if ((requirements.memoryTypeBits & (1u << iType)) &&
+            (memoryProps.memoryTypes[iType].propertyFlags & kWanted) == kWanted) {
+            memoryType = iType;
+            break;
+        }
+    }
+    if (memoryType == ~0u) Die("finding host-visible memory for the vertex buffer", 0);
+
+    // Memory backing a buffer whose address is queried must itself be
+    // allocated with the device-address flag.
+    constexpr VkMemoryAllocateFlagsInfo kAllocFlags = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+    };
+    const VkMemoryAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &kAllocFlags,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = memoryType,
+    };
+    VK_CHECK(vkAllocateMemory(r.device, &allocInfo, nullptr, &r.vertexMemory));
+    VK_CHECK(vkBindBufferMemory(r.device, r.vertexBuffer, r.vertexMemory, 0));
+
+    void *mapped;
+    VK_CHECK(vkMapMemory(r.device, r.vertexMemory, 0, sizeof(kTriangleVertices), 0, &mapped));
+    const U8 *src = reinterpret_cast<const U8 *>(kTriangleVertices);
+    U8 *dst = static_cast<U8 *>(mapped);
+    for (U64 i = 0; i < sizeof(kTriangleVertices); ++i) dst[i] = src[i];
+    vkUnmapMemory(r.device, r.vertexMemory);
+
+    const VkBufferDeviceAddressInfo addressInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = r.vertexBuffer,
+    };
+    r.vertexAddress = vkGetBufferDeviceAddress(r.device, &addressInfo);
+}
+
+static void CreatePipeline() {
+    constexpr VkPushConstantRange kPushRange = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = sizeof(VkDeviceAddress),
+    };
+    const VkPipelineLayoutCreateInfo layoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &kPushRange,
+    };
+    VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &r.pipelineLayout));
 
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
@@ -426,6 +512,8 @@ static void DrawFrame() {
     vkCmdBeginRendering(r.cmd, &rendering);
 
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
+    vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                       sizeof(r.vertexAddress), &r.vertexAddress);
     const VkViewport viewport = {
         .x = 0.0f, .y = 0.0f,
         .width = static_cast<F32>(r.extent.width), .height = static_cast<F32>(r.extent.height),
@@ -510,6 +598,7 @@ int main() {
     ShowWindow(hwnd, SW_SHOW);
 
     InitVulkan(hwnd);
+    CreateVertexBuffer();
     CreatePipeline();
 
     for (;;) {

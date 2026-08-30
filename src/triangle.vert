@@ -1,18 +1,23 @@
 #version 460
+#extension GL_EXT_buffer_reference : require
 
 layout(location = 0) out vec3 fragColor;
 
-const vec2 kPositions[3] = vec2[](
-    vec2(0.0, -0.6),
-    vec2(0.6, 0.6),
-    vec2(-0.6, 0.6));
+struct Vertex {
+    vec4 position;
+    vec4 color;
+};
 
-const vec3 kColors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0));
+layout(buffer_reference, std430) readonly buffer VertexBuffer {
+    Vertex vertices[];
+};
+
+layout(push_constant) uniform PushConstants {
+    VertexBuffer vertexBuffer;
+} pc;
 
 void main() {
-    gl_Position = vec4(kPositions[gl_VertexIndex], 0.0, 1.0);
-    fragColor = kColors[gl_VertexIndex];
+    Vertex v = pc.vertexBuffer.vertices[gl_VertexIndex];
+    gl_Position = v.position;
+    fragColor = v.color.rgb;
 }

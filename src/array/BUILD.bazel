@@ -1,0 +1,24 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# The routines are hand-written AVX2 assembly: MASM for Windows (assembled by
+# ml64 through the MSVC toolchain) and NASM syntax for Linux. The Linux
+# sources need `nasm` on PATH; they are not GAS-compatible.
+LINUX_ASM = glob(["Linux/*.s"])
+
+genrule(
+    name = "linux_objects",
+    srcs = LINUX_ASM,
+    outs = [src.replace("Linux/", "").replace(".s", ".o") for src in LINUX_ASM],
+    cmd = "for f in $(SRCS); do nasm -f elf64 $$f -o $(RULEDIR)/$$(basename $$f .s).o; done",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+cc_library(
+    name = "array",
+    srcs = select({
+        "@platforms//os:windows": glob(["Windows/*.asm"]),
+        "//conditions:default": [":linux_objects"],
+    }),
+    hdrs = ["fast_array_ops.h"],
+    visibility = ["//visibility:public"],
+)

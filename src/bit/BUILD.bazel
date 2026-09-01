@@ -1,0 +1,11 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Header-only. Requires AVX2/BMI1/LZCNT/POPCNT, enabled project-wide in .bazelrc.
+cc_library(
+    name = "bit",
+    hdrs = [
+        "bitarray.h",
+        "bitops.h",
+    ],
+    visibility = ["//visibility:public"],
+)

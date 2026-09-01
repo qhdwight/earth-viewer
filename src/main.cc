@@ -7,7 +7,9 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
-#include "core.h"
+#include "src/core.h"
+#include "src/array/fast_array_ops.h"
+#include "src/bit/bitarray.h"
 #include "src/triangle_frag.h"
 #include "src/triangle_vert.h"
 
@@ -110,13 +112,13 @@ static void CreateSwapchain() {
     VkSurfaceFormatKHR formats[kMaxFormats];
     U32 formatCount = kMaxFormats;
     vkGetPhysicalDeviceSurfaceFormatsKHR(r.physicalDevice, r.surface, &formatCount, formats);
-    VkSurfaceFormatKHR chosen = formats[0];
-    for (U32 iFormat = 0; iFormat < formatCount; ++iFormat) {
-        if (formats[iFormat].format == VK_FORMAT_B8G8R8A8_SRGB &&
-            formats[iFormat].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            chosen = formats[iFormat];
-        }
-    }
+    constexpr VkSurfaceFormatKHR kPreferredFormat = {
+        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+    };
+    static_assert(sizeof(VkSurfaceFormatKHR) == sizeof(U64));
+    const U64 preferredIndex = FastFind64(formats, formatCount, __builtin_bit_cast(U64, kPreferredFormat));
+    const VkSurfaceFormatKHR chosen = preferredIndex == ~0ull ? formats[0] : formats[preferredIndex];
     r.format = chosen.format;
 
     U32 minImages = caps.minImageCount + 1;
@@ -124,7 +126,7 @@ static void CreateSwapchain() {
         minImages = Min(minImages, caps.maxImageCount);
     }
 
-    const VkSwapchainKHR oldSwapchain = r.swapchain;
+    VkSwapchainKHR oldSwapchain = r.swapchain;
     const VkSwapchainCreateInfoKHR info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = r.surface,
@@ -295,9 +297,8 @@ static void CreateVertexBuffer() {
     constexpr VkMemoryPropertyFlags kWanted =
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     U32 memoryType = ~0u;
-    for (U32 iType = 0; iType < memoryProps.memoryTypeCount; ++iType) {
-        if ((requirements.memoryTypeBits & (1u << iType)) &&
-            (memoryProps.memoryTypes[iType].propertyFlags & kWanted) == kWanted) {
+    for (const U32 iType: SmallBitArray{requirements.memoryTypeBits}) {
+        if ((memoryProps.memoryTypes[iType].propertyFlags & kWanted) == kWanted) {
             memoryType = iType;
             break;
         }

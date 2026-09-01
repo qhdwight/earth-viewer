@@ -4,6 +4,7 @@ load("//third_party/vulkan:glsl.bzl", "glsl_header")
 cc_library(
     name = "core",
     hdrs = ["core.h"],
+    visibility = ["//visibility:public"],
 )
 
 glsl_header(
@@ -19,7 +20,7 @@ glsl_header(
 )
 
 cc_binary(
-    name = "vulkan_info",
+    name = "app",
     srcs = [
         "main.cc",
         ":triangle_frag",
@@ -33,6 +34,8 @@ cc_binary(
     }),
     deps = [
         ":core",
+        "//src/array",
+        "//src/bit",
         "@vulkan",
     ],
 )

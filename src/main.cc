@@ -20,8 +20,9 @@
 
 #define VK_CHECK(expr)                                                    \
   do {                                                                    \
-    if (VkResult vkCheckResult = (expr); vkCheckResult != VK_SUCCESS) \
-      Die(#expr, vkCheckResult);                                        \
+    if (VkResult vkCheckResult = (expr); vkCheckResult != VK_SUCCESS) {   \
+      Die(#expr, vkCheckResult);                                          \
+      }                                                                   \
   } while (0)
 
 constexpr char const *kAppName = "rct";
@@ -123,7 +124,7 @@ static void CreateSwapchain() {
         minImages = Min(minImages, caps.maxImageCount);
     }
 
-    VkSwapchainKHR oldSwapchain = r.swapchain;
+    const VkSwapchainKHR oldSwapchain = r.swapchain;
     const VkSwapchainCreateInfoKHR info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = r.surface,
@@ -144,10 +145,9 @@ static void CreateSwapchain() {
     vkDestroySwapchainKHR(r.device, oldSwapchain, nullptr);
 
     r.imageCount = kMaxImages;
-    VK_CHECK(
-        vkGetSwapchainImagesKHR(r.device, r.swapchain, &r.imageCount, r.images));
+    VK_CHECK(vkGetSwapchainImagesKHR(r.device, r.swapchain, &r.imageCount, r.images));
     for (U32 i = 0; i < r.imageCount; ++i) {
-        VkImageViewCreateInfo view = {
+        const VkImageViewCreateInfo view = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = r.images[i],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -156,8 +156,8 @@ static void CreateSwapchain() {
         };
         VK_CHECK(vkCreateImageView(r.device, &view, nullptr, &r.views[i]));
 
-        VkSemaphoreCreateInfo sem = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        VK_CHECK(vkCreateSemaphore(r.device, &sem, nullptr, &r.renderDone[i]));
+        constexpr VkSemaphoreCreateInfo kSem = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        VK_CHECK(vkCreateSemaphore(r.device, &kSem, nullptr, &r.renderDone[i]));
     }
 }
 
@@ -279,13 +279,13 @@ static void InitVulkan(HWND hwnd) {
 // address (VK_KHR_buffer_device_address, core 1.2) is handed to the vertex
 // shader through a push constant. No descriptor sets, no vertex input state.
 static void CreateVertexBuffer() {
-    const VkBufferCreateInfo bufferInfo = {
+    constexpr VkBufferCreateInfo kBufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = sizeof(kTriangleVertices),
         .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VK_CHECK(vkCreateBuffer(r.device, &bufferInfo, nullptr, &r.vertexBuffer));
+    VK_CHECK(vkCreateBuffer(r.device, &kBufferInfo, nullptr, &r.vertexBuffer));
 
     VkMemoryRequirements requirements;
     vkGetBufferMemoryRequirements(r.device, r.vertexBuffer, &requirements);
@@ -293,7 +293,7 @@ static void CreateVertexBuffer() {
     VkPhysicalDeviceMemoryProperties memoryProps;
     vkGetPhysicalDeviceMemoryProperties(r.physicalDevice, &memoryProps);
     constexpr VkMemoryPropertyFlags kWanted =
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     U32 memoryType = ~0u;
     for (U32 iType = 0; iType < memoryProps.memoryTypeCount; ++iType) {
         if ((requirements.memoryTypeBits & (1u << iType)) &&
@@ -323,7 +323,7 @@ static void CreateVertexBuffer() {
     VK_CHECK(vkMapMemory(r.device, r.vertexMemory, 0, sizeof(kTriangleVertices), 0, &mapped));
     const U8 *src = reinterpret_cast<const U8 *>(kTriangleVertices);
     U8 *dst = static_cast<U8 *>(mapped);
-    for (U64 i = 0; i < sizeof(kTriangleVertices); ++i) dst[i] = src[i];
+    memcpy(dst, src, sizeof(kTriangleVertices));
     vkUnmapMemory(r.device, r.vertexMemory);
 
     const VkBufferDeviceAddressInfo addressInfo = {

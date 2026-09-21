@@ -1,56 +1,7 @@
-"""Module extension exposing the locally installed Vulkan SDK as @vulkan."""
+"""Module extension exposing the locally installed Vulkan SDK as @vulkan.
 
-_BUILD_WINDOWS = """\
-load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
-
-cc_import(
-    name = "loader",
-    interface_library = "lib/vulkan-1.lib",
-    # vulkan-1.dll ships with the driver / Windows itself, so it is not a
-    # runtime dependency Bazel needs to stage.
-    system_provided = True,
-)
-
-cc_library(
-    name = "vulkan",
-    hdrs = glob([
-        "include/vulkan/**",
-        "include/vk_video/**",
-    ]),
-    includes = ["include"],
-    visibility = ["//visibility:public"],
-    deps = [":loader"],
-)
-
-filegroup(
-    name = "glslang",
-    srcs = ["bin/glslangValidator.exe"],
-    visibility = ["//visibility:public"],
-)
-"""
-
-_BUILD_UNIX = """\
-load("@rules_cc//cc:defs.bzl", "cc_library")
-
-cc_library(
-    name = "vulkan",
-    hdrs = glob([
-        "include/vulkan/**",
-        "include/vk_video/**",
-    ]),
-    includes = ["include"],
-    linkopts = [
-        "-L{lib_dir}",
-        "-lvulkan",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-filegroup(
-    name = "glslang",
-    srcs = ["bin/glslangValidator"],
-    visibility = ["//visibility:public"],
-)
+The generated repository's BUILD file is BUILD.vulkan in this package, stamped
+with the SDK paths that vary per machine.
 """
 
 def _vulkan_repo_impl(rctx):
@@ -76,10 +27,14 @@ def _vulkan_repo_impl(rctx):
     rctx.symlink(lib_dir, "lib")
     rctx.symlink(bin_dir, "bin")
 
-    if windows:
-        rctx.file("BUILD.bazel", _BUILD_WINDOWS)
-    else:
-        rctx.file("BUILD.bazel", _BUILD_UNIX.format(lib_dir = str(lib_dir)))
+    rctx.template(
+        "BUILD.bazel",
+        Label("//third_party/vulkan:BUILD.vulkan"),
+        substitutions = {
+            "%{lib_dir}": str(lib_dir),
+            "%{glslang}": "bin/glslangValidator.exe" if windows else "bin/glslangValidator",
+        },
+    )
 
 _vulkan_repo = repository_rule(
     implementation = _vulkan_repo_impl,

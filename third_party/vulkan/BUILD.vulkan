@@ -1,0 +1,41 @@
+# Template for the generated @vulkan repository. extensions.bzl symlinks the
+# SDK's include/, lib/ and bin/ directories beside this file and substitutes
+# the %{...} placeholders. Everything else is an ordinary BUILD file.
+
+load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
+
+# Windows links the loader through its import library. vulkan-1.dll ships with
+# the driver / Windows itself, so it is not a runtime dependency Bazel stages.
+cc_import(
+    name = "loader",
+    interface_library = "lib/vulkan-1.lib",
+    system_provided = True,
+    target_compatible_with = ["@platforms//os:windows"],
+)
+
+cc_library(
+    name = "vulkan",
+    hdrs = glob([
+        "include/vulkan/**",
+        "include/vk_video/**",
+    ]),
+    includes = ["include"],
+    linkopts = select({
+        "@platforms//os:windows": [],
+        "//conditions:default": [
+            "-L%{lib_dir}",
+            "-lvulkan",
+        ],
+    }),
+    visibility = ["//visibility:public"],
+    deps = select({
+        "@platforms//os:windows": [":loader"],
+        "//conditions:default": [],
+    }),
+)
+
+filegroup(
+    name = "glslang",
+    srcs = ["%{glslang}"],
+    visibility = ["//visibility:public"],
+)

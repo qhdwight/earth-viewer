@@ -10,8 +10,10 @@
 #include "src/core.h"
 #include "src/array/fast_array_ops.h"
 #include "src/bit/bitarray.h"
-#include "src/triangle_frag.h"
-#include "src/triangle_vert.h"
+#include "src/borders.h"
+#include "src/earth_frag.h"
+#include "src/earth_vert.h"
+#include "src/math.h"
 
 #include <cstdio>
 
@@ -27,25 +29,36 @@
       }                                                                   \
   } while (0)
 
-constexpr char const *kAppName = "rct";
-constexpr wchar_t const *kClassName = L"rct";
-constexpr wchar_t const *kWindowTitle = L"rct triangle";
+constexpr char const *kAppName = "earth-viewer";
+constexpr wchar_t const *kClassName = L"earth-viewer";
+constexpr wchar_t const *kWindowTitle = L"earth viewer";
 constexpr int kIdcArrow = 32512; // IDC_ARROW
 
 constexpr U32 kMaxImages = 16;
 constexpr U32 kMaxFormats = 32;
 constexpr U32 kMaxDevices = 16;
 constexpr U32 kMaxQueueFamilies = 16;
+constexpr U32 kMaxKeys = 256;
 
-constexpr U32 kVerticesPerTriangle = 3;
 constexpr U32 kInstanceCount = 1;
 
 constexpr U32 kWindowWidth = 1280;
 constexpr U32 kWindowHeight = 720;
 
 constexpr F32 kQueuePriority = 1.0f;
-constexpr F32 kLineWidth = 1.0f;
+constexpr F32 kLineWidth = 2.0f;
 constexpr U64 kWaitForever = ~0ull;
+
+// Camera. The globe is a unit sphere at the origin, so distances are in Earth
+// radii. Movement speed scales with altitude so the surface never rushes by.
+constexpr F32 kFovScale = kSqrt3; // 1 / tan(60 degrees / 2)
+constexpr F32 kNearPlane = 1.0e-4f;
+constexpr F32 kMouseRadiansPerPixel = 0.003f;
+constexpr F32 kMaxPitch = 0.5f * kPi - 0.01f;
+constexpr F32 kSpeedPerAltitude = 1.0f; // altitudes per second
+constexpr F32 kMinAltitude = 1.0e-3f;
+constexpr F32 kBoost = 4.0f;
+constexpr F32 kMaxFrameSeconds = 0.1f;
 
 constexpr VkImageSubresourceRange kColorSubresource = {
     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -54,18 +67,61 @@ constexpr VkImageSubresourceRange kColorSubresource = {
     .baseArrayLayer = 0,
     .layerCount = 1,
 };
-constexpr VkClearColorValue kClearColor = {.float32 = {0.05f, 0.05f, 0.08f, 1.0f}};
+constexpr VkClearColorValue kClearColor = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}};
 
-// Matches the std430 Vertex struct in triangle.vert.
-struct Vertex {
-    F32 position[4];
-    F32 color[4];
+// ---------------------------------------------------------------------------
+// Border geometry. The header stores each ring once; the GPU buffer holds a
+// line list (two packed points per segment) so the whole globe is one draw.
+
+static constexpr U32 CountBorderSegments() {
+    U32 segments = 0;
+    for (const BorderRing &ring: kBorderRings) {
+        segments += ring.count - 1;
+    }
+    return segments;
+}
+
+constexpr U32 kBorderSegmentCount = CountBorderSegments();
+constexpr U32 kLineVertexCount = 2 * kBorderSegmentCount;
+constexpr U64 kVertexBufferSize = kLineVertexCount * sizeof(U32);
+
+// Longitude in the low 16 bits, latitude in the high 16 bits. Unpacked by
+// earth.vert.
+static constexpr U32 PackBorderPoint(const I16 (&point)[2]) {
+    return static_cast<U16>(point[0]) | (static_cast<U32>(static_cast<U16>(point[1])) << 16);
+}
+
+// Matches the push_constant blocks in earth.vert and earth.frag.
+struct PushConstants {
+    Mat4 viewProj;
+    F32 cameraPos[4];
+    VkDeviceAddress vertexBuffer;
 };
 
-constexpr Vertex kTriangleVertices[kVerticesPerTriangle] = {
-    {.position = {0.0f, -0.6f, 0.0f, 1.0f}, .color = {1.0f, 0.0f, 0.0f, 1.0f}},
-    {.position = {0.6f, 0.6f, 0.0f, 1.0f}, .color = {0.0f, 1.0f, 0.0f, 1.0f}},
-    {.position = {-0.6f, 0.6f, 0.0f, 1.0f}, .color = {0.0f, 0.0f, 1.0f, 1.0f}},
+static_assert(sizeof(PushConstants) == 88);
+static_assert(offsetof(PushConstants, cameraPos) == 64);
+static_assert(offsetof(PushConstants, vertexBuffer) == 80);
+
+// ---------------------------------------------------------------------------
+
+struct Camera {
+    Vec3 position;
+    F32 yaw; // radians about +Y; 0 looks down -Z at the prime meridian
+    F32 pitch; // radians above the horizontal plane
+};
+
+struct CameraBasis {
+    Vec3 right;
+    Vec3 up;
+    Vec3 forward;
+};
+
+struct Input {
+    bool keyDown[kMaxKeys];
+    bool dragging;
+    POINT lastMouse;
+    I32 mouseDx;
+    I32 mouseDy;
 };
 
 struct Renderer {
@@ -97,6 +153,8 @@ struct Renderer {
 };
 
 static Renderer r;
+static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
+static Input input;
 
 static void CreateSwapchain() {
     vkDeviceWaitIdle(r.device);
@@ -283,7 +341,7 @@ static void InitVulkan(HWND hwnd) {
 static void CreateVertexBuffer() {
     constexpr VkBufferCreateInfo kBufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = sizeof(kTriangleVertices),
+        .size = kVertexBufferSize,
         .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
@@ -320,11 +378,18 @@ static void CreateVertexBuffer() {
     VK_CHECK(vkAllocateMemory(r.device, &allocInfo, nullptr, &r.vertexMemory));
     VK_CHECK(vkBindBufferMemory(r.device, r.vertexBuffer, r.vertexMemory, 0));
 
+    // Expand every ring into line segments straight into the mapped buffer.
     void *mapped;
-    VK_CHECK(vkMapMemory(r.device, r.vertexMemory, 0, sizeof(kTriangleVertices), 0, &mapped));
-    const U8 *src = reinterpret_cast<const U8 *>(kTriangleVertices);
-    U8 *dst = static_cast<U8 *>(mapped);
-    memcpy(dst, src, sizeof(kTriangleVertices));
+    VK_CHECK(vkMapMemory(r.device, r.vertexMemory, 0, kVertexBufferSize, 0, &mapped));
+    U32 *dst = static_cast<U32 *>(mapped);
+    U32 written = 0;
+    for (const BorderRing &ring: kBorderRings) {
+        for (U32 i = ring.first; i + 1 < ring.first + ring.count; ++i) {
+            dst[written++] = PackBorderPoint(kBorderPoints[i]);
+            dst[written++] = PackBorderPoint(kBorderPoints[i + 1]);
+        }
+    }
+    if (written != kLineVertexCount) Die("expanding border rings", written);
     vkUnmapMemory(r.device, r.vertexMemory);
 
     const VkBufferDeviceAddressInfo addressInfo = {
@@ -336,9 +401,9 @@ static void CreateVertexBuffer() {
 
 static void CreatePipeline() {
     constexpr VkPushConstantRange kPushRange = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
-        .size = sizeof(VkDeviceAddress),
+        .size = sizeof(PushConstants),
     };
     const VkPipelineLayoutCreateInfo layoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -351,13 +416,13 @@ static void CreatePipeline() {
     // no VkShaderModule objects needed.
     const VkShaderModuleCreateInfo vertCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(kTriangleVert),
-        .pCode = kTriangleVert,
+        .codeSize = sizeof(kEarthVert),
+        .pCode = kEarthVert,
     };
     const VkShaderModuleCreateInfo fragCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(kTriangleFrag),
-        .pCode = kTriangleFrag,
+        .codeSize = sizeof(kEarthFrag),
+        .pCode = kEarthFrag,
     };
 
     const VkPipelineShaderStageCreateInfo stages[] = {
@@ -380,7 +445,7 @@ static void CreatePipeline() {
     };
     constexpr VkPipelineInputAssemblyStateCreateInfo kAssembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
     };
     constexpr VkPipelineViewportStateCreateInfo kViewport = {
         // counts are dynamic
@@ -466,6 +531,66 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
     vkCmdPipelineBarrier2(r.cmd, &dependency);
 }
 
+static CameraBasis ComputeBasis() {
+    const F32 cosPitch = Cos(camera.pitch);
+    const Vec3 forward = {Sin(camera.yaw) * cosPitch, Sin(camera.pitch), -Cos(camera.yaw) * cosPitch};
+    const Vec3 right = {Cos(camera.yaw), 0.0f, Sin(camera.yaw)};
+    return {.right = right, .up = Cross(right, forward), .forward = forward};
+}
+
+// Free-fly camera: drag the mouse to look, WASD to move along the view, Q/E
+// down/up, Shift to go faster.
+static void UpdateCamera(const F32 dt) {
+    camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel;
+    camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel;
+    camera.pitch = Clamp(camera.pitch, -kMaxPitch, kMaxPitch);
+    if (camera.yaw > kPi) {
+        camera.yaw -= kTau;
+    } else if (camera.yaw < -kPi) {
+        camera.yaw += kTau;
+    }
+    input.mouseDx = 0;
+    input.mouseDy = 0;
+
+    const CameraBasis basis = ComputeBasis();
+    Vec3 move{};
+    if (input.keyDown['W']) {
+        move = Add(move, basis.forward);
+    }
+    if (input.keyDown['S']) {
+        move = Sub(move, basis.forward);
+    }
+    if (input.keyDown['D']) {
+        move = Add(move, basis.right);
+    }
+    if (input.keyDown['A']) {
+        move = Sub(move, basis.right);
+    }
+    if (input.keyDown['E']) {
+        move = Add(move, basis.up);
+    }
+    if (input.keyDown['Q']) {
+        move = Sub(move, basis.up);
+    }
+    if (Dot(move, move) > 0.0f) {
+        const F32 altitude = Max(Length(camera.position) - 1.0f, kMinAltitude);
+        const F32 boost = input.keyDown[VK_SHIFT] ? kBoost : 1.0f;
+        const F32 speed = kSpeedPerAltitude * altitude * boost;
+        camera.position = Add(camera.position, Scale(Normalize(move), speed * dt));
+    }
+}
+
+static PushConstants BuildPushConstants() {
+    const CameraBasis basis = ComputeBasis();
+    const F32 aspect = static_cast<F32>(r.extent.width) / static_cast<F32>(r.extent.height);
+    return {
+        .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
+                             View(camera.position, basis.right, basis.up, basis.forward)),
+        .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
+        .vertexBuffer = r.vertexAddress,
+    };
+}
+
 static void DrawFrame() {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
 
@@ -513,8 +638,9 @@ static void DrawFrame() {
     vkCmdBeginRendering(r.cmd, &rendering);
 
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
-    vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof(r.vertexAddress), &r.vertexAddress);
+    const PushConstants push = BuildPushConstants();
+    vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(push), &push);
     const VkViewport viewport = {
         .x = 0.0f, .y = 0.0f,
         .width = static_cast<F32>(r.extent.width), .height = static_cast<F32>(r.extent.height),
@@ -523,7 +649,7 @@ static void DrawFrame() {
     vkCmdSetViewportWithCount(r.cmd, 1, &viewport);
     const VkRect2D scissor{.offset = {.x = 0, .y = 0}, .extent = r.extent};
     vkCmdSetScissorWithCount(r.cmd, 1, &scissor);
-    vkCmdDraw(r.cmd, kVerticesPerTriangle, kInstanceCount, 0, 0);
+    vkCmdDraw(r.cmd, kLineVertexCount, kInstanceCount, 0, 0);
 
     vkCmdEndRendering(r.cmd);
 
@@ -575,12 +701,59 @@ static void DrawFrame() {
         Die("vkQueuePresentKHR", presented);
 }
 
+static POINT MousePoint(const LPARAM lparam) {
+    return {.x = static_cast<I16>(LOWORD(lparam)), .y = static_cast<I16>(HIWORD(lparam))};
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam) {
-    if (msg == WM_DESTROY) {
-        PostQuitMessage(0);
-        return 0;
+    switch (msg) {
+        case WM_DESTROY: {
+            PostQuitMessage(0);
+            return 0;
+        }
+        case WM_KEYDOWN: {
+            if (wparam == VK_ESCAPE) {
+                DestroyWindow(hwnd);
+            }
+            input.keyDown[wparam & (kMaxKeys - 1)] = true;
+            return 0;
+        }
+        case WM_KEYUP: {
+            input.keyDown[wparam & (kMaxKeys - 1)] = false;
+            return 0;
+        }
+        case WM_KILLFOCUS: {
+            for (bool &down: input.keyDown) {
+                down = false;
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN: {
+            SetCapture(hwnd);
+            input.dragging = true;
+            input.lastMouse = MousePoint(lparam);
+            return 0;
+        }
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP: {
+            ReleaseCapture();
+            input.dragging = false;
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            if (input.dragging) {
+                const POINT mouse = MousePoint(lparam);
+                input.mouseDx += mouse.x - input.lastMouse.x;
+                input.mouseDy += mouse.y - input.lastMouse.y;
+                input.lastMouse = mouse;
+            }
+            return 0;
+        }
+        default: {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
     }
-    return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 int main() {
@@ -602,6 +775,11 @@ int main() {
     CreateVertexBuffer();
     CreatePipeline();
 
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    LARGE_INTEGER lastTime;
+    QueryPerformanceCounter(&lastTime);
+
     for (;;) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -619,6 +797,12 @@ int main() {
             WaitMessage(); // minimized: block instead of spinning
             continue;
         }
+
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
+        lastTime = now;
+        UpdateCamera(Min(dt, kMaxFrameSeconds));
         DrawFrame();
     }
 }

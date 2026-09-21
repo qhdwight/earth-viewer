@@ -7,24 +7,32 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-glsl_header(
-    name = "triangle_vert",
-    src = "triangle.vert",
-    variable = "kTriangleVert",
+cc_library(
+    name = "math",
+    hdrs = ["math.h"],
+    visibility = ["//visibility:public"],
+    deps = [":core"],
 )
 
 glsl_header(
-    name = "triangle_frag",
-    src = "triangle.frag",
-    variable = "kTriangleFrag",
+    name = "earth_vert",
+    src = "earth.vert",
+    variable = "kEarthVert",
+)
+
+glsl_header(
+    name = "earth_frag",
+    src = "earth.frag",
+    variable = "kEarthFrag",
 )
 
 cc_binary(
     name = "app",
     srcs = [
+        "borders.h",
         "main.cc",
-        ":triangle_frag",
-        ":triangle_vert",
+        ":earth_frag",
+        ":earth_vert",
     ],
     linkopts = select({
         "@platforms//os:windows": [
@@ -34,6 +42,7 @@ cc_binary(
     }),
     deps = [
         ":core",
+        ":math",
         "//src/array",
         "//src/bit",
         "@vulkan",

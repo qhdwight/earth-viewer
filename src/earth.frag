@@ -13,20 +13,19 @@ layout(push_constant) uniform PushConstants {
 const vec3 kLineColor = vec3(1.0);
 
 void main() {
-    // The globe is opaque: a point on the unit sphere is visible only when
-    // its normal (which is the point itself) faces the camera.
-    if (dot(worldPos, pc.cameraPos.xyz - worldPos) < 0.0) {
-        discard;
-    }
-
     // Round caps: inside the segment the distance is just the offset from the
     // centre line; past either end it is the distance to that end point.
     const float beyond = max(max(ribbon.x, ribbon.y), 0.0);
     const float distance = length(vec2(beyond, ribbon.z));
-    // Fade the last pixel of the edge for anti-aliasing.
-    const float alpha = 1.0 - smoothstep(1.0 - fwidth(distance), 1.0, distance);
-    if (alpha <= 0.0) {
+    // Centre the one-pixel fade on the true edge. The padded ribbon includes
+    // the outer half of the fade, preserving thin lines at distant zooms.
+    // Evaluate derivatives before any non-uniform discard.
+    const float aa = max(0.5 * fwidth(distance), 0.0001);
+    const float alpha = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, distance);
+    // The globe is opaque: only the camera-facing side is visible.
+    if (alpha <= 0.0 || dot(worldPos, pc.cameraPos.xyz - worldPos) < 0.0) {
         discard;
     }
-    outColor = vec4(kLineColor, alpha);
+    // MAX blending uses RGB directly, so coverage must be premultiplied.
+    outColor = vec4(kLineColor * alpha, alpha);
 }

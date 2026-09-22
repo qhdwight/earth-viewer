@@ -21,5 +21,6 @@ void main() {
     if (alpha <= 0.0 || -b - sqrt(max(discriminant, 0.0)) < 0.0) {
         discard;
     }
-    outColor = vec4(kSphereColor, alpha);
+    // Match the premultiplied coverage expected by MAX blending.
+    outColor = vec4(kSphereColor * alpha, alpha);
 }

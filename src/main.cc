@@ -54,7 +54,7 @@ constexpr F32 kQueuePriority = 1.0f;
 // Border lines have a fixed width on the ground, in Earth radii, so they
 // thicken as the camera approaches. Below the pixel floor they would break
 // up into dots, so they never get thinner than that on screen.
-constexpr F32 kLineWidthWorld = 0.002f;
+constexpr F32 kLineWidthWorld = 0.001f;
 constexpr F32 kMinLineWidthPixels = 1.5f;
 // Ribbons are drawn this much wider than the line so the fragment shader
 // can fade the true edge across pixels whose centres lie just outside it.

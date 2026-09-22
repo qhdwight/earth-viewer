@@ -15,7 +15,9 @@ const vec2 kCorners[kVertexCount] = vec2[kVertexCount](vec2(-1.0, -1.0), vec2(3.
 
 void main() {
     const vec2 ndc = kCorners[gl_VertexIndex];
-    const vec4 nearPoint = inverse(pc.viewProj) * vec4(ndc, 0.0, 1.0);
-    rayDir = nearPoint.xyz / nearPoint.w - pc.cameraPos.xyz;
+    // The infinite far plane has homogeneous w = 0, giving a world-space
+    // direction directly without subtracting nearly equal camera positions.
+    const vec4 farDirection = inverse(pc.viewProj) * vec4(ndc, 1.0, 1.0);
+    rayDir = farDirection.xyz;
     gl_Position = vec4(ndc, 0.0, 1.0);
 }

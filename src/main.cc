@@ -41,6 +41,8 @@ constexpr U32 kMaxFormats = 32;
 constexpr U32 kMaxDevices = 16;
 constexpr U32 kMaxQueueFamilies = 16;
 constexpr U32 kMaxKeys = 256;
+// Every Vulkan device supports 4x colour multisampling, so no query needed.
+constexpr VkSampleCountFlagBits kSampleCount = VK_SAMPLE_COUNT_4_BIT;
 
 constexpr U32 kInstanceCount = 1;
 constexpr U32 kFullScreenVertexCount = 3; // sphere.vert covers the screen with one triangle
@@ -54,6 +56,9 @@ constexpr F32 kQueuePriority = 1.0f;
 // up into dots, so they never get thinner than that on screen.
 constexpr F32 kLineWidthWorld = 0.002f;
 constexpr F32 kMinLineWidthPixels = 1.5f;
+// Ribbons are drawn this much wider than the line so the fragment shader
+// can fade the true edge across pixels whose centres lie just outside it.
+constexpr F32 kLineAaPaddingPixels = 1.0f;
 // Only meaningful for line topologies; must stay 1 without the wideLines feature.
 constexpr F32 kRasterLineWidth = 1.0f;
 constexpr U64 kWaitForever = ~0ull;
@@ -110,6 +115,7 @@ struct PushConstants {
     F32 cameraPos[4];
     // x: half line width in world units.
     // y: minimum half line width in world units per unit of view depth.
+    // z: anti-aliasing padding in world units per unit of view depth.
     F32 line[4];
     VkDeviceAddress vertexBuffer;
 };
@@ -156,6 +162,10 @@ struct Renderer {
     VkImage images[kMaxImages]{};
     VkImageView views[kMaxImages]{};
     VkSemaphore renderDone[kMaxImages]{};
+    // Multisampled colour target, resolved into the swapchain image.
+    VkImage msaaImage = VK_NULL_HANDLE;
+    VkDeviceMemory msaaMemory = VK_NULL_HANDLE;
+    VkImageView msaaView = VK_NULL_HANDLE;
 
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
@@ -173,6 +183,17 @@ struct Renderer {
 static Renderer r;
 static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
 static Input input;
+
+static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
+    VkPhysicalDeviceMemoryProperties memoryProps;
+    vkGetPhysicalDeviceMemoryProperties(r.physicalDevice, &memoryProps);
+    for (const U32 iType: SmallBitArray{typeBits}) {
+        if ((memoryProps.memoryTypes[iType].propertyFlags & wanted) == wanted) {
+            return iType;
+        }
+    }
+    Die("finding a memory type", wanted);
+}
 
 static void CreateSwapchain() {
     vkDeviceWaitIdle(r.device);
@@ -237,6 +258,43 @@ static void CreateSwapchain() {
         constexpr VkSemaphoreCreateInfo kSem = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VK_CHECK(vkCreateSemaphore(r.device, &kSem, nullptr, &r.renderDone[i]));
     }
+
+    // The multisampled target follows the swapchain extent, so it is rebuilt
+    // here with it. Destroying null handles is allowed on the first pass.
+    vkDestroyImageView(r.device, r.msaaView, nullptr);
+    vkDestroyImage(r.device, r.msaaImage, nullptr);
+    vkFreeMemory(r.device, r.msaaMemory, nullptr);
+    const VkImageCreateInfo msaaInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = r.format,
+        .extent = {.width = r.extent.width, .height = r.extent.height, .depth = 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = kSampleCount,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VK_CHECK(vkCreateImage(r.device, &msaaInfo, nullptr, &r.msaaImage));
+    VkMemoryRequirements msaaRequirements;
+    vkGetImageMemoryRequirements(r.device, r.msaaImage, &msaaRequirements);
+    const VkMemoryAllocateInfo msaaAlloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = msaaRequirements.size,
+        .memoryTypeIndex = FindMemoryType(msaaRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+    VK_CHECK(vkAllocateMemory(r.device, &msaaAlloc, nullptr, &r.msaaMemory));
+    VK_CHECK(vkBindImageMemory(r.device, r.msaaImage, r.msaaMemory, 0));
+    const VkImageViewCreateInfo msaaView = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = r.msaaImage,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = r.format,
+        .subresourceRange = kColorSubresource,
+    };
+    VK_CHECK(vkCreateImageView(r.device, &msaaView, nullptr, &r.msaaView));
 }
 
 static void InitVulkan(HWND hwnd) {
@@ -368,18 +426,9 @@ static void CreateVertexBuffer() {
     VkMemoryRequirements requirements;
     vkGetBufferMemoryRequirements(r.device, r.vertexBuffer, &requirements);
 
-    VkPhysicalDeviceMemoryProperties memoryProps;
-    vkGetPhysicalDeviceMemoryProperties(r.physicalDevice, &memoryProps);
     constexpr VkMemoryPropertyFlags kWanted =
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    U32 memoryType = ~0u;
-    for (const U32 iType: SmallBitArray{requirements.memoryTypeBits}) {
-        if ((memoryProps.memoryTypes[iType].propertyFlags & kWanted) == kWanted) {
-            memoryType = iType;
-            break;
-        }
-    }
-    if (memoryType == ~0u) Die("finding host-visible memory for the vertex buffer", 0);
+    const U32 memoryType = FindMemoryType(requirements.memoryTypeBits, kWanted);
 
     // Memory backing a buffer whose address is queried must itself be
     // allocated with the device-address flag.
@@ -482,17 +531,21 @@ static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const
     };
     constexpr VkPipelineMultisampleStateCreateInfo kMultisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .rasterizationSamples = kSampleCount,
     };
-    // Standard alpha blending; the shaders fade edges over a pixel.
+    // The shaders output premultiplied colour with anti-aliased coverage and
+    // the pipeline keeps the brighter of source and destination. Overlapping
+    // pieces of the same line then saturate instead of stacking up, which
+    // matters far away where many segments share a pixel. This works because
+    // everything drawn is brighter than what it covers.
     constexpr VkPipelineColorBlendAttachmentState kBlendAttachment = {
         .blendEnable = VK_TRUE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .colorBlendOp = VK_BLEND_OP_MAX,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
-        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .alphaBlendOp = VK_BLEND_OP_MAX,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
@@ -623,12 +676,14 @@ static PushConstants BuildPushConstants() {
     const F32 height = static_cast<F32>(r.extent.height);
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
-    const F32 minHalfWidthPerDepth = kMinLineWidthPixels / (height * kFovScale);
+    const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
+    const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * unitsPerPixelPerDepth;
+    const F32 aaPaddingPerDepth = kLineAaPaddingPixels * unitsPerPixelPerDepth;
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
                              View(camera.position, basis.right, basis.up, basis.forward)),
         .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
-        .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, 0.0f, 0.0f},
+        .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, 0.0f},
         .vertexBuffer = r.vertexAddress,
     };
 }
@@ -656,18 +711,30 @@ static void DrawFrame() {
     };
     VK_CHECK(vkBeginCommandBuffer(r.cmd, &kBegin));
 
+    // Both the multisampled target and the swapchain image (the resolve
+    // destination) start each frame with undefined contents.
+    TransitionImage(r.msaaImage, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     TransitionImage(r.images[image], VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
+    // Draw into the multisampled image and resolve into the swapchain image
+    // when rendering ends; the samples themselves are never stored.
     const VkRenderingAttachmentInfo color = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = r.views[image],
+        .imageView = r.msaaView,
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+        .resolveImageView = r.views[image],
+        .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .clearValue = {kClearColor},
     };
     const VkRenderingInfo rendering = {

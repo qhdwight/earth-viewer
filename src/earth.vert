@@ -17,7 +17,9 @@ layout(buffer_reference, std430) readonly buffer VertexBuffer {
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
     vec4 cameraPos;
-    vec4 line; // x: half width in world units, y: minimum half width per unit of view depth
+    // x: half width in world units, y: minimum half width per unit of view
+    // depth, z: anti-aliasing padding per unit of view depth.
+    vec4 line;
     VertexBuffer vertexBuffer;
 } pc;
 
@@ -59,13 +61,20 @@ void main() {
     const vec3 across = SafeNormalize(cross(along, pc.cameraPos.xyz - p));
 
     const vec4 clip = pc.viewProj * vec4(p, 1.0);
-    const float halfWidth = max(pc.line.x, pc.line.y * clip.w);
-    const vec3 offset = (across * side + along * (end * 2.0 - 1.0)) * halfWidth;
+    const float depth = max(clip.w, 0.0);
+    const float halfWidth = max(pc.line.x, pc.line.y * depth);
+    // The geometry is padded by about a pixel so the fragment shader can fade
+    // the true edge; ribbon coordinates stay in units of the true half width.
+    const float paddedHalfWidth = halfWidth + pc.line.z * depth;
+    const float padded = paddedHalfWidth / halfWidth;
+    const vec3 offset = (across * side + along * (end * 2.0 - 1.0)) * paddedHalfWidth;
 
-    // At the start corners this vertex sits one half width before p0, at the
-    // end corners one half width after p1.
+    // At the start corners this vertex sits one padded half width before p0,
+    // at the end corners one padded half width after p1.
     const float lengthInHalfWidths = length(p1 - p0) / halfWidth;
     worldPos = p;
-    ribbon = vec3(mix(1.0, -lengthInHalfWidths - 1.0, end), mix(-lengthInHalfWidths - 1.0, 1.0, end), side);
+    ribbon = vec3(mix(padded, -lengthInHalfWidths - padded, end),
+                  mix(-lengthInHalfWidths - padded, padded, end),
+                  side * padded);
     gl_Position = clip + pc.viewProj * vec4(offset, 0.0);
 }

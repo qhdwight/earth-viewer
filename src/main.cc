@@ -14,6 +14,8 @@
 #include "src/earth_frag.h"
 #include "src/earth_vert.h"
 #include "src/math.h"
+#include "src/sphere_frag.h"
+#include "src/sphere_vert.h"
 
 #include <cstdio>
 
@@ -41,12 +43,19 @@ constexpr U32 kMaxQueueFamilies = 16;
 constexpr U32 kMaxKeys = 256;
 
 constexpr U32 kInstanceCount = 1;
+constexpr U32 kFullScreenVertexCount = 3; // sphere.vert covers the screen with one triangle
 
 constexpr U32 kWindowWidth = 1280;
 constexpr U32 kWindowHeight = 720;
 
 constexpr F32 kQueuePriority = 1.0f;
-constexpr F32 kLineWidth = 2.0f;
+// Border lines have a fixed width on the ground, in Earth radii, so they
+// thicken as the camera approaches. Below the pixel floor they would break
+// up into dots, so they never get thinner than that on screen.
+constexpr F32 kLineWidthWorld = 0.002f;
+constexpr F32 kMinLineWidthPixels = 1.5f;
+// Only meaningful for line topologies; must stay 1 without the wideLines feature.
+constexpr F32 kRasterLineWidth = 1.0f;
 constexpr U64 kWaitForever = ~0ull;
 
 // Camera. The globe is a unit sphere at the origin, so distances are in Earth
@@ -82,8 +91,12 @@ static constexpr U32 CountBorderSegments() {
 }
 
 constexpr U32 kBorderSegmentCount = CountBorderSegments();
-constexpr U32 kLineVertexCount = 2 * kBorderSegmentCount;
-constexpr U64 kVertexBufferSize = kLineVertexCount * sizeof(U32);
+constexpr U32 kPointsPerSegment = 2;
+constexpr U32 kSegmentPointCount = kPointsPerSegment * kBorderSegmentCount;
+constexpr U64 kVertexBufferSize = kSegmentPointCount * sizeof(U32);
+// earth.vert expands every segment into a quad of two triangles.
+constexpr U32 kVerticesPerSegment = 6;
+constexpr U32 kDrawVertexCount = kVerticesPerSegment * kBorderSegmentCount;
 
 // Longitude in the low 16 bits, latitude in the high 16 bits. Unpacked by
 // earth.vert.
@@ -95,12 +108,16 @@ static constexpr U32 PackBorderPoint(const I16 (&point)[2]) {
 struct PushConstants {
     Mat4 viewProj;
     F32 cameraPos[4];
+    // x: half line width in world units.
+    // y: minimum half line width in world units per unit of view depth.
+    F32 line[4];
     VkDeviceAddress vertexBuffer;
 };
 
-static_assert(sizeof(PushConstants) == 88);
+static_assert(sizeof(PushConstants) == 104);
 static_assert(offsetof(PushConstants, cameraPos) == 64);
-static_assert(offsetof(PushConstants, vertexBuffer) == 80);
+static_assert(offsetof(PushConstants, line) == 80);
+static_assert(offsetof(PushConstants, vertexBuffer) == 96);
 
 // ---------------------------------------------------------------------------
 
@@ -149,7 +166,8 @@ struct Renderer {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipeline spherePipeline = VK_NULL_HANDLE;
+    VkPipeline linePipeline = VK_NULL_HANDLE;
 };
 
 static Renderer r;
@@ -385,11 +403,11 @@ static void CreateVertexBuffer() {
     U32 written = 0;
     for (const BorderRing &ring: kBorderRings) {
         for (U32 i = ring.first; i + 1 < ring.first + ring.count; ++i) {
-            dst[written++] = PackBorderPoint(kBorderPoints[i]);
+            dst[written++] = PackBorderPoint(kBorderPoints[i + 0]);
             dst[written++] = PackBorderPoint(kBorderPoints[i + 1]);
         }
     }
-    if (written != kLineVertexCount) Die("expanding border rings", written);
+    if (written != kSegmentPointCount) Die("expanding border rings", written);
     vkUnmapMemory(r.device, r.vertexMemory);
 
     const VkBufferDeviceAddressInfo addressInfo = {
@@ -399,7 +417,7 @@ static void CreateVertexBuffer() {
     r.vertexAddress = vkGetBufferDeviceAddress(r.device, &addressInfo);
 }
 
-static void CreatePipeline() {
+static void CreatePipelineLayout() {
     constexpr VkPushConstantRange kPushRange = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
@@ -411,18 +429,23 @@ static void CreatePipeline() {
         .pPushConstantRanges = &kPushRange,
     };
     VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &r.pipelineLayout));
+}
 
+// Both pipelines share the layout, the triangle-list topology and alpha
+// blending; only the SPIR-V differs.
+static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const U32 *fragSpirv,
+                                 const U64 fragSize) {
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
     const VkShaderModuleCreateInfo vertCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(kEarthVert),
-        .pCode = kEarthVert,
+        .codeSize = vertSize,
+        .pCode = vertSpirv,
     };
     const VkShaderModuleCreateInfo fragCode = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(kEarthFrag),
-        .pCode = kEarthFrag,
+        .codeSize = fragSize,
+        .pCode = fragSpirv,
     };
 
     const VkPipelineShaderStageCreateInfo stages[] = {
@@ -445,7 +468,7 @@ static void CreatePipeline() {
     };
     constexpr VkPipelineInputAssemblyStateCreateInfo kAssembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
     constexpr VkPipelineViewportStateCreateInfo kViewport = {
         // counts are dynamic
@@ -455,13 +478,21 @@ static void CreatePipeline() {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_NONE,
-        .lineWidth = kLineWidth,
+        .lineWidth = kRasterLineWidth,
     };
     constexpr VkPipelineMultisampleStateCreateInfo kMultisample = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
+    // Standard alpha blending; the shaders fade edges over a pixel.
     constexpr VkPipelineColorBlendAttachmentState kBlendAttachment = {
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
@@ -504,7 +535,9 @@ static void CreatePipeline() {
         .pDynamicState = &dynamic,
         .layout = r.pipelineLayout,
     };
-    VK_CHECK(vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &r.pipeline));
+    VkPipeline pipeline;
+    VK_CHECK(vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
+    return pipeline;
 }
 
 static void TransitionImage(VkImage image, const VkImageLayout from, const VkImageLayout to,
@@ -578,15 +611,24 @@ static void UpdateCamera(const F32 dt) {
         const F32 speed = kSpeedPerAltitude * altitude * boost;
         camera.position = Add(camera.position, Scale(Normalize(move), speed * dt));
     }
+    // Never sink below the surface; the sphere is drawn from outside only.
+    const F32 distance = Length(camera.position);
+    if (distance < 1.0f + kMinAltitude) {
+        camera.position = Scale(camera.position, (1.0f + kMinAltitude) / distance);
+    }
 }
 
 static PushConstants BuildPushConstants() {
     const CameraBasis basis = ComputeBasis();
-    const F32 aspect = static_cast<F32>(r.extent.width) / static_cast<F32>(r.extent.height);
+    const F32 height = static_cast<F32>(r.extent.height);
+    const F32 aspect = static_cast<F32>(r.extent.width) / height;
+    // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
+    const F32 minHalfWidthPerDepth = kMinLineWidthPixels / (height * kFovScale);
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
                              View(camera.position, basis.right, basis.up, basis.forward)),
         .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
+        .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, 0.0f, 0.0f},
         .vertexBuffer = r.vertexAddress,
     };
 }
@@ -637,7 +679,6 @@ static void DrawFrame() {
     };
     vkCmdBeginRendering(r.cmd, &rendering);
 
-    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
     const PushConstants push = BuildPushConstants();
     vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(push), &push);
@@ -649,7 +690,11 @@ static void DrawFrame() {
     vkCmdSetViewportWithCount(r.cmd, 1, &viewport);
     const VkRect2D scissor{.offset = {.x = 0, .y = 0}, .extent = r.extent};
     vkCmdSetScissorWithCount(r.cmd, 1, &scissor);
-    vkCmdDraw(r.cmd, kLineVertexCount, kInstanceCount, 0, 0);
+
+    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.spherePipeline);
+    vkCmdDraw(r.cmd, kFullScreenVertexCount, kInstanceCount, 0, 0);
+    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linePipeline);
+    vkCmdDraw(r.cmd, kDrawVertexCount, kInstanceCount, 0, 0);
 
     vkCmdEndRendering(r.cmd);
 
@@ -773,7 +818,9 @@ int main() {
 
     InitVulkan(hwnd);
     CreateVertexBuffer();
-    CreatePipeline();
+    CreatePipelineLayout();
+    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag));
+    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag));
 
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);

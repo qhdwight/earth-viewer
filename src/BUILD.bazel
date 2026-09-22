@@ -26,6 +26,18 @@ glsl_header(
     variable = "kEarthFrag",
 )
 
+glsl_header(
+    name = "sphere_vert",
+    src = "sphere.vert",
+    variable = "kSphereVert",
+)
+
+glsl_header(
+    name = "sphere_frag",
+    src = "sphere.frag",
+    variable = "kSphereFrag",
+)
+
 cc_binary(
     name = "app",
     srcs = [
@@ -33,6 +45,8 @@ cc_binary(
         "main.cc",
         ":earth_frag",
         ":earth_vert",
+        ":sphere_frag",
+        ":sphere_vert",
     ],
     linkopts = select({
         "@platforms//os:windows": [

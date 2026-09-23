@@ -33,7 +33,7 @@
 
 constexpr char const *kAppName = "earth-viewer";
 constexpr wchar_t const *kClassName = L"earth-viewer";
-constexpr wchar_t const *kWindowTitle = L"earth viewer";
+constexpr wchar_t const *kWindowTitle = L"Earth Viewer";
 constexpr int kIdcArrow = 32512; // IDC_ARROW
 
 constexpr U32 kMaxImages = 16;
@@ -183,6 +183,95 @@ struct Renderer {
 static Renderer r;
 static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
 static Input input;
+
+constexpr F32 kFpsUpdateSeconds = 0.5f;
+static U32 displayedFps = 0;
+
+// Tiny 3x5 font: digits, F, P, S, colon. Each row uses its low three bits.
+constexpr U8 kFpsGlyphs[14][5] = {
+    {0b111, 0b101, 0b101, 0b101, 0b111},
+    {0b010, 0b110, 0b010, 0b010, 0b111},
+    {0b111, 0b001, 0b111, 0b100, 0b111},
+    {0b111, 0b001, 0b111, 0b001, 0b111},
+    {0b101, 0b101, 0b111, 0b001, 0b001},
+    {0b111, 0b100, 0b111, 0b001, 0b111},
+    {0b111, 0b100, 0b111, 0b101, 0b111},
+    {0b111, 0b001, 0b010, 0b010, 0b010},
+    {0b111, 0b101, 0b111, 0b101, 0b111},
+    {0b111, 0b101, 0b111, 0b001, 0b111},
+    {0b111, 0b100, 0b110, 0b100, 0b100},
+    {0b111, 0b101, 0b111, 0b100, 0b100},
+    {0b111, 0b100, 0b111, 0b001, 0b111},
+    {0b000, 0b010, 0b000, 0b010, 0b000},
+};
+
+static void DrawFps() {
+    constexpr U32 kScale = 3;
+    constexpr U32 kMargin = 8;
+    constexpr U32 kPadding = 6;
+    constexpr U32 kMaxCharacters = 10;
+    constexpr U32 kPanelWidth = 2 * kPadding + kMaxCharacters * 4 * kScale;
+    constexpr U32 kPanelHeight = 2 * kPadding + 5 * kScale;
+    if (r.extent.width < kMargin + kPanelWidth || r.extent.height < kMargin + kPanelHeight) {
+        return;
+    }
+    // Clear small rectangles after the scene so the counter stays legible over
+    // both stars and borders. No font textures, extra pipelines or allocations.
+    constexpr VkClearAttachment kBackground = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .colorAttachment = 0,
+        .clearValue = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
+    };
+    constexpr VkClearRect kPanel = {
+        .rect = {.offset = {.x = kMargin, .y = kMargin}, .extent = {.width = kPanelWidth, .height = kPanelHeight}},
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    vkCmdClearAttachments(r.cmd, 1, &kBackground, 1, &kPanel);
+
+    char text[kMaxCharacters + 1];
+    snprintf(text, sizeof(text), "FPS: %u", displayedFps);
+    VkClearRect pixels[kMaxCharacters * 3 * 5];
+    U32 pixelCount = 0;
+    for (U32 i = 0; text[i] != '\0'; ++i) {
+        const char character = text[i];
+        if (character == ' ') {
+            continue;
+        }
+        const U32 glyph = character == 'F'
+                              ? 10
+                              : character == 'P'
+                                    ? 11
+                                    : character == 'S'
+                                          ? 12
+                                          : character == ':'
+                                                ? 13
+                                                : character - '0';
+        for (U32 y = 0; y < 5; ++y) {
+            for (U32 x = 0; x < 3; ++x) {
+                if ((kFpsGlyphs[glyph][y] & (1u << (2 - x))) != 0) {
+                    pixels[pixelCount++] = {
+                        .rect = {
+                            .offset = {
+                                .x = static_cast<I32>(kMargin + kPadding + (i * 4 + x) * kScale),
+                                .y = static_cast<I32>(kMargin + kPadding + y * kScale)
+                            },
+                            .extent = {.width = kScale, .height = kScale},
+                        },
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    };
+                }
+            }
+        }
+    }
+    constexpr VkClearAttachment kForeground = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .colorAttachment = 0,
+        .clearValue = {.color = {.float32 = {1.0f, 1.0f, 1.0f, 1.0f}}},
+    };
+    vkCmdClearAttachments(r.cmd, 1, &kForeground, pixelCount, pixels);
+}
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -688,7 +777,7 @@ static PushConstants BuildPushConstants() {
     };
 }
 
-static void DrawFrame() {
+static bool DrawFrame() {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
 
     U32 image;
@@ -696,7 +785,7 @@ static void DrawFrame() {
                                                     r.acquire, VK_NULL_HANDLE, &image);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         CreateSwapchain();
-        return;
+        return false;
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         Die("vkAcquireNextImageKHR", acquired);
@@ -763,6 +852,8 @@ static void DrawFrame() {
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linePipeline);
     vkCmdDraw(r.cmd, kDrawVertexCount, kInstanceCount, 0, 0);
 
+    DrawFps();
+
     vkCmdEndRendering(r.cmd);
 
     TransitionImage(r.images[image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -811,6 +902,7 @@ static void DrawFrame() {
         CreateSwapchain();
     else if (presented != VK_SUCCESS)
         Die("vkQueuePresentKHR", presented);
+    return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
 }
 
 static POINT MousePoint(const LPARAM lparam) {
@@ -893,6 +985,8 @@ int main() {
     QueryPerformanceFrequency(&frequency);
     LARGE_INTEGER lastTime;
     QueryPerformanceCounter(&lastTime);
+    LARGE_INTEGER fpsStart = lastTime;
+    U32 fpsFrames = 0;
 
     for (;;) {
         MSG msg;
@@ -909,6 +1003,9 @@ int main() {
         GetClientRect(hwnd, &rect);
         if (rect.right <= rect.left || rect.bottom <= rect.top) {
             WaitMessage(); // minimized: block instead of spinning
+            QueryPerformanceCounter(&lastTime);
+            fpsStart = lastTime;
+            fpsFrames = 0;
             continue;
         }
 
@@ -917,6 +1014,18 @@ int main() {
         const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
         lastTime = now;
         UpdateCamera(Min(dt, kMaxFrameSeconds));
-        DrawFrame();
+        if (DrawFrame()) {
+            ++fpsFrames;
+        }
+        LARGE_INTEGER frameEnd;
+        QueryPerformanceCounter(&frameEnd);
+        const F32 fpsSeconds = static_cast<F32>(frameEnd.QuadPart - fpsStart.QuadPart) /
+                               static_cast<F32>(frequency.QuadPart);
+        if (fpsSeconds >= kFpsUpdateSeconds) {
+            const F32 fps = static_cast<F32>(fpsFrames) / fpsSeconds;
+            displayedFps = static_cast<U32>(Min(fps + 0.5f, 99999.0f));
+            fpsFrames = 0;
+            fpsStart = frameEnd;
+        }
     }
 }

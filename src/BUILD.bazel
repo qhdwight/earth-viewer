@@ -61,6 +61,18 @@ glsl_header(
 )
 
 glsl_header(
+    name = "link_vert",
+    src = "link.vert",
+    variable = "kLinkVert",
+)
+
+glsl_header(
+    name = "link_frag",
+    src = "link.frag",
+    variable = "kLinkFrag",
+)
+
+glsl_header(
     name = "satellite_vert",
     src = "satellite.vert",
     variable = "kSatelliteVert",
@@ -79,6 +91,7 @@ cc_binary(
         "clock.h",
         "main.cc",
         "satellites.h",
+        "stations.h",
         "sun.h",
         "text.h",
         ":text_vert",
@@ -89,6 +102,8 @@ cc_binary(
         ":sphere_vert",
         ":satellite_frag",
         ":satellite_vert",
+        ":link_frag",
+        ":link_vert",
     ],
     linkopts = select({
         "@platforms//os:windows": [

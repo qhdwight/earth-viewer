@@ -19,5 +19,7 @@ void main() {
     if (intensity <= 0.0) {
         discard;
     }
-    outColor = vec4(color * intensity, intensity); // premultiplied, blended with MAX
+    // Premultiplied and blended source-over after everything else in the
+    // scene, so dots cover the globe, its glow, the borders and the links.
+    outColor = vec4(color * intensity, intensity);
 }

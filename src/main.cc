@@ -13,10 +13,13 @@
 #include "src/borders.h"
 #include "src/earth_frag.h"
 #include "src/earth_vert.h"
+#include "src/link_frag.h"
+#include "src/link_vert.h"
 #include "src/math.h"
 #include "src/satellite_frag.h"
 #include "src/satellite_vert.h"
 #include "src/satellites.h"
+#include "src/stations.h"
 #include "src/sphere_frag.h"
 #include "src/sphere_vert.h"
 #include "src/sun.h"
@@ -138,7 +141,13 @@ static_assert(offsetof(PushConstants, vertexBuffer) == 112);
 // lines, with a minimum size on screen set in satellite.vert.
 constexpr F32 kSatelliteRadiusWorld = 0.0005f; // Earth radii, about 3 km
 constexpr U32 kVerticesPerSprite = 6;
-constexpr U64 kSatelliteBufferSize = kSatelliteCount * 4 * sizeof(F32);
+// Markers are the satellites followed by the ground stations, as vec4.
+constexpr U32 kMarkerCount = kSatelliteCount + kStationCount;
+constexpr U64 kSatelliteBufferSize = kMarkerCount * 4 * sizeof(F32);
+// Station to satellite links: ribbons like the borders, but thinner.
+constexpr F32 kLinkWidthWorld = 0.0004f; // Earth radii, about 2.5 km
+constexpr F32 kMinLinkWidthPixels = 1.0f;
+constexpr U64 kLinkBufferSize = kMaxLinks * 2 * 4 * sizeof(F32);
 
 // Matches the push_constant block in satellite.vert.
 struct SatellitePush {
@@ -216,6 +225,13 @@ struct Renderer {
     F32 *satellitePositions = nullptr;
     VkPipelineLayout satelliteLayout = VK_NULL_HANDLE;
     VkPipeline satellitePipeline = VK_NULL_HANDLE;
+
+    // Link endpoints as vec4 pairs in world space, rewritten every frame.
+    VkBuffer linkBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory linkMemory = VK_NULL_HANDLE;
+    VkDeviceAddress linkAddress = 0;
+    F32 *linkPoints = nullptr;
+    VkPipeline linkPipeline = VK_NULL_HANDLE;
 };
 
 static Renderer r;
@@ -229,6 +245,9 @@ static U32 displayedFps = 0;
 static U64 frameUtcTicks = 0;
 // ECEF orbit states, advanced by real elapsed time every frame.
 static OrbitState satelliteStates[kSatelliteCount];
+static GroundStation groundStations[kStationCount];
+static Link links[kMaxLinks];
+static U32 linkCount = 0;
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -522,6 +541,23 @@ static void CreateVertexBuffer() {
 static void CreateSatelliteBuffer() {
     r.satellitePositions = static_cast<F32 *>(CreateMappedBuffer(kSatelliteBufferSize, r.satelliteBuffer,
                                                                  r.satelliteMemory, r.satelliteAddress));
+    r.linkPoints = static_cast<F32 *>(CreateMappedBuffer(kLinkBufferSize, r.linkBuffer, r.linkMemory,
+                                                         r.linkAddress));
+}
+
+static void WriteMarker(F32 *const dst, const Vec3d ecef, const F32 kind) {
+    const Vec3 p = WorldFromEcef(ecef);
+    dst[0] = p.x;
+    dst[1] = p.y;
+    dst[2] = p.z;
+    dst[3] = kind;
+}
+
+// Stations never move in ECEF, so their markers are written once.
+static void WriteStationMarkers() {
+    for (U32 i = 0; i < kStationCount; ++i) {
+        WriteMarker(r.satellitePositions + 4 * (kSatelliteCount + i), groundStations[i].position, 1.0f);
+    }
 }
 
 static VkPipelineLayout CreatePushLayout(const U32 pushSize) {
@@ -540,10 +576,12 @@ static VkPipelineLayout CreatePushLayout(const U32 pushSize) {
     return layout;
 }
 
-// Scene pipelines use MAX blending; the text overlay uses source-over.
+// Scene pipelines use MAX blending. The text overlay, the station links and
+// the satellite and station dots use source-over, so they cover what is
+// beneath them.
 static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const U32 *fragSpirv,
                                  const U64 fragSize, const VkPipelineLayout layout,
-                                 const bool overlay = false) {
+                                 const bool sourceOver = false) {
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
     const VkShaderModuleCreateInfo vertCode = {
@@ -601,11 +639,11 @@ static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const
     const VkPipelineColorBlendAttachmentState blendAttachment = {
         .blendEnable = VK_TRUE,
         .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = overlay ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
-        .colorBlendOp = overlay ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
+        .dstColorBlendFactor = sourceOver ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
+        .colorBlendOp = sourceOver ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = overlay ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
-        .alphaBlendOp = overlay ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
+        .dstAlphaBlendFactor = sourceOver ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
+        .alphaBlendOp = sourceOver ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
@@ -771,12 +809,11 @@ static bool DrawFrame() {
 
     // The fence guarantees the GPU has finished reading last frame's positions.
     for (U32 i = 0; i < kSatelliteCount; ++i) {
-        const Vec3 p = WorldFromEcef(satelliteStates[i].position);
-        F32 *const dst = r.satellitePositions + 4 * i;
-        dst[0] = p.x;
-        dst[1] = p.y;
-        dst[2] = p.z;
-        dst[3] = 1.0f;
+        WriteMarker(r.satellitePositions + 4 * i, satelliteStates[i].position, 0.0f);
+    }
+    for (U32 i = 0; i < linkCount; ++i) {
+        WriteMarker(r.linkPoints + 8 * i, groundStations[links[i].station].position, 0.0f);
+        WriteMarker(r.linkPoints + 8 * i + 4, satelliteStates[links[i].satellite].position, 0.0f);
     }
 
     U32 image;
@@ -851,11 +888,25 @@ static bool DrawFrame() {
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linePipeline);
     vkCmdDraw(r.cmd, kDrawVertexCount, kInstanceCount, 0, 0);
 
+    // Links share the scene layout, with their own widths and endpoints. They
+    // are drawn after the borders with source-over blending, so they sit on top.
+    if (linkCount > 0) {
+        const F32 unitsPerPixelPerDepth = 2.0f / (static_cast<F32>(r.extent.height) * kFovScale);
+        PushConstants linkPush = push;
+        linkPush.line[0] = 0.5f * kLinkWidthWorld;
+        linkPush.line[1] = 0.5f * kMinLinkWidthPixels * unitsPerPixelPerDepth;
+        linkPush.vertexBuffer = r.linkAddress;
+        vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linkPipeline);
+        vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(linkPush), &linkPush);
+        vkCmdDraw(r.cmd, kVerticesPerSegment * linkCount, kInstanceCount, 0, 0);
+    }
+
     const SatellitePush satellitePush = BuildSatellitePush(push);
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.satellitePipeline);
     vkCmdPushConstants(r.cmd, r.satelliteLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(satellitePush), &satellitePush);
-    vkCmdDraw(r.cmd, kVerticesPerSprite * kSatelliteCount, kInstanceCount, 0, 0);
+    vkCmdDraw(r.cmd, kVerticesPerSprite * kMarkerCount, kInstanceCount, 0, 0);
 
     DrawOverlay();
 
@@ -984,12 +1035,16 @@ int main() {
     CreateVertexBuffer();
     CreateSatelliteBuffer();
     InitConstellation(satelliteStates);
+    InitGroundStations(groundStations);
+    WriteStationMarkers();
     r.pipelineLayout = CreatePushLayout(sizeof(PushConstants));
     r.satelliteLayout = CreatePushLayout(sizeof(SatellitePush));
     r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
     r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
     r.satellitePipeline = CreatePipeline(kSatelliteVert, sizeof(kSatelliteVert), kSatelliteFrag,
-                                         sizeof(kSatelliteFrag), r.satelliteLayout);
+                                         sizeof(kSatelliteFrag), r.satelliteLayout, true);
+    r.linkPipeline = CreatePipeline(kLinkVert, sizeof(kLinkVert), kLinkFrag, sizeof(kLinkFrag), r.pipelineLayout,
+                                    true);
     InitText();
 
     LARGE_INTEGER frequency;
@@ -1033,6 +1088,7 @@ int main() {
                                      static_cast<F64>(frequency.QuadPart);
         satelliteTime = now;
         PropagateConstellation(satelliteStates, kSatelliteCount, satelliteSeconds);
+        linkCount = FindLinks(groundStations, satelliteStates, links);
         FILETIME utcNow;
         GetSystemTimeAsFileTime(&utcNow);
         frameUtcTicks = (static_cast<U64>(utcNow.dwHighDateTime) << 32) | utcNow.dwLowDateTime;

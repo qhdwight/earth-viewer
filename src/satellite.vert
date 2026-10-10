@@ -1,8 +1,9 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
 
-// Each satellite is a camera-facing square of six vertices, sized to fit a
-// round dot plus its halo. Positions are in world space, Earth radii.
+// Each satellite or ground station is a camera-facing square of six
+// vertices, sized to fit a round dot plus its halo. Positions are in world
+// space, Earth radii; w is 0 for a satellite and 1 for a ground station.
 layout(location = 0) out vec2 local; // position in the sprite, in dot radii
 layout(location = 1) flat out vec3 color;
 layout(location = 2) flat out float pixelsPerRadius;
@@ -30,9 +31,14 @@ const float kMinRadiusPixels = 2.0;
 const float kHaloRadii = 3.0; // must match satellite.frag
 const vec3 kSunlitColor = vec3(1.0, 0.72, 0.28);
 const vec3 kShadowColor = vec3(0.22, 0.28, 0.45);
+const vec3 kStationColor = vec3(0.35, 1.0, 0.45);
+// Ground stations sit exactly on the surface, at t = 1 below; the margin
+// keeps them from flickering in and out.
+const float kOcclusionMargin = 0.001;
 
 void main() {
-    const vec3 p = pc.positions.positions[gl_VertexIndex / kVerticesPerSprite].xyz;
+    const vec4 marker = pc.positions.positions[gl_VertexIndex / kVerticesPerSprite];
+    const vec3 p = marker.xyz;
     const vec2 corner = kCorners[gl_VertexIndex % kVerticesPerSprite];
 
     // Hidden when the line of sight from the camera meets the globe first:
@@ -43,7 +49,7 @@ void main() {
     const float b = dot(o, d);
     const float discriminant = b * b - a * (dot(o, o) - 1.0);
     const float t = (-b - sqrt(max(discriminant, 0.0))) / a;
-    if (discriminant > 0.0 && t > 0.0 && t < 1.0) {
+    if (discriminant > 0.0 && t > 0.0 && t < 1.0 - kOcclusionMargin) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside the clip volume
         return;
     }
@@ -51,7 +57,7 @@ void main() {
     // In Earth's shadow, approximated as a cylinder behind the globe.
     const float sunward = dot(p, pc.sunDirection.xyz);
     const bool shadowed = sunward < 0.0 && dot(p, p) - sunward * sunward < 1.0;
-    color = shadowed ? kShadowColor : kSunlitColor;
+    color = marker.w > 0.5 ? kStationColor : (shadowed ? kShadowColor : kSunlitColor);
 
     // An offset perpendicular to the view changes clip xy by a fixed amount per
     // world unit at any depth, so the sprite is built directly in clip space.

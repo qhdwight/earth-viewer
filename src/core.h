@@ -45,6 +45,8 @@ constexpr I32 Max(const I32 a, const I32 b) { return a > b ? a : b; }
 constexpr I64 Max(const I64 a, const I64 b) { return a > b ? a : b; }
 constexpr F32 Max(const F32 a, const F32 b) { return a > b ? a : b; }
 
+constexpr F32 Abs(const F32 x) { return x < 0.0f ? -x : x; }
+constexpr F64 Abs(const F64 x) { return x < 0.0 ? -x : x; }
 constexpr F32 Clamp(const F32 x, const F32 lo, const F32 hi) { return Min(Max(x, lo), hi); }
 
 template<typename T, U64 N>

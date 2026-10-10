@@ -55,6 +55,7 @@ cc_binary(
     srcs = [
         "borders.h",
         "main.cc",
+        "sun.h",
         "text.h",
         ":text_vert",
         ":text_frag",

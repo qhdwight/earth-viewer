@@ -6,6 +6,7 @@ layout(location = 0) out vec4 outColor;
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
     vec4 cameraPos;
+    layout(offset = 96) vec4 sunDirection;
 } pc;
 
 const vec3 kSphereColor = vec3(0.005); // linear; the swapchain is sRGB
@@ -19,6 +20,12 @@ const float kPi = 3.14159265;
 const float kGlowScaleHeight = 0.02; // about 250 km
 const float kGlowGain = 1.8;
 const vec3 kGlowColor = vec3(1.0);
+// The glow is full strength where the haze is sunlit and falls to
+// kNightGlow on the night side. The haze sits above the ground, so light
+// wraps a little past the terminator: kTwilightWrap is the cosine of the
+// sun angle over which it fades.
+const float kNightGlow = 0.15;
+const float kTwilightWrap = 0.3;
 
 uvec3 HashCell(const ivec3 cell) {
     // Every output must depend on all three coordinates. Pairwise mixing
@@ -100,6 +107,13 @@ vec3 Glow(const float depth) {
     return kGlowColor * (1.0 - exp(-x * x));
 }
 
+// How strongly the haze at point p glows, from its angle to the Sun.
+// Dividing by a clamped length keeps the centre of the globe finite.
+float Sunlight(const vec3 p) {
+    const float cosine = dot(p, pc.sunDirection.xyz) / max(length(p), 0.000001);
+    return mix(kNightGlow, 1.0, smoothstep(-kTwilightWrap, kTwilightWrap, cosine));
+}
+
 void main() {
     // Nearest intersection of the ray o + t d with the unit sphere:
     // t^2 + 2 t (o.d) + (o.o - 1) = 0.
@@ -117,8 +131,12 @@ void main() {
         background = StarField(d, pixelAngle);
     }
     // Both glow paths are evaluated so limb pixels blend them smoothly.
-    const vec3 sky = background + Glow(GlowDepth(o, d, b, false));
-    const vec3 globe = kSphereColor + Glow(GlowDepth(o, d, b, true));
+    // Each path is lit by the Sun at its densest point: the closest approach
+    // for rays passing the globe, the surface hit for rays striking it.
+    const vec3 skyPoint = o + d * max(-b, 0.0);
+    const vec3 globePoint = o + d * (-b - sqrt(max(discriminant, 0.0)));
+    const vec3 sky = background + Glow(GlowDepth(o, d, b, false)) * Sunlight(skyPoint);
+    const vec3 globe = kSphereColor + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
     // Composite here so the globe occludes stars even with MAX blending.
     outColor = vec4(mix(sky, globe, alpha), 1.0);
 }

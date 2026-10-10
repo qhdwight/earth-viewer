@@ -20,6 +20,7 @@ layout(push_constant) uniform PushConstants {
     // x: half width in world units, y: minimum half width per unit of view
     // depth, z: anti-aliasing padding per unit of view depth.
     vec4 line;
+    vec4 sunDirection; // used by sphere.frag
     VertexBuffer vertexBuffer;
 } pc;
 

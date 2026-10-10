@@ -13,6 +13,7 @@ using I32 = std::int32_t;
 using I64 = std::int64_t;
 
 using F32 = float;
+using F64 = double;
 
 inline constexpr F32 kPi = 3.14159265f;
 inline constexpr F32 kTau = 2.0f * kPi;

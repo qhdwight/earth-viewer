@@ -16,6 +16,7 @@
 #include "src/math.h"
 #include "src/sphere_frag.h"
 #include "src/sphere_vert.h"
+#include "src/sun.h"
 #include "src/text_frag.h"
 #include "src/text_vert.h"
 
@@ -119,13 +120,16 @@ struct PushConstants {
     // y: minimum half line width in world units per unit of view depth.
     // z: anti-aliasing padding in world units per unit of view depth.
     F32 line[4];
+    // xyz: unit vector toward the Sun, for the glow in sphere.frag.
+    F32 sunDirection[4];
     VkDeviceAddress vertexBuffer;
 };
 
-static_assert(sizeof(PushConstants) == 104);
+static_assert(sizeof(PushConstants) == 120);
 static_assert(offsetof(PushConstants, cameraPos) == 64);
 static_assert(offsetof(PushConstants, line) == 80);
-static_assert(offsetof(PushConstants, vertexBuffer) == 96);
+static_assert(offsetof(PushConstants, sunDirection) == 96);
+static_assert(offsetof(PushConstants, vertexBuffer) == 112);
 
 // ---------------------------------------------------------------------------
 
@@ -686,11 +690,15 @@ static PushConstants BuildPushConstants() {
     const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
     const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * unitsPerPixelPerDepth;
     const F32 aaPaddingPerDepth = kLineAaPaddingPixels * unitsPerPixelPerDepth;
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    const Vec3 sun = SunDirection((static_cast<U64>(now.dwHighDateTime) << 32) | now.dwLowDateTime);
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
                              View(camera.position, basis.right, basis.up, basis.forward)),
         .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
         .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, 0.0f},
+        .sunDirection = {sun.x, sun.y, sun.z, 0.0f},
         .vertexBuffer = r.vertexAddress,
     };
 }

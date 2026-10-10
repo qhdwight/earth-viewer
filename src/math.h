@@ -8,6 +8,12 @@ struct Vec3 {
     F32 x, y, z;
 };
 
+// Double precision, for orbits: float resolves a low orbit only to about half
+// a meter.
+struct Vec3d {
+    F64 x, y, z;
+};
+
 // Column-major, matching the GLSL default for a push constant mat4.
 struct Mat4 {
     F32 m[16];
@@ -22,9 +28,20 @@ constexpr Vec3 Cross(const Vec3 a, const Vec3 b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
 
+constexpr Vec3d Add(const Vec3d a, const Vec3d b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+constexpr Vec3d Sub(const Vec3d a, const Vec3d b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+constexpr Vec3d Scale(const Vec3d a, const F64 s) { return {a.x * s, a.y * s, a.z * s}; }
+constexpr F64 Dot(const Vec3d a, const Vec3d b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
 inline F32 Sqrt(const F32 x) {
     return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(x)));
 }
+
+inline F64 Sqrt(const F64 x) {
+    return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(x)));
+}
+
+inline F64 Length(const Vec3d a) { return Sqrt(Dot(a, a)); }
 
 inline F32 Length(const Vec3 a) { return Sqrt(Dot(a, a)); }
 

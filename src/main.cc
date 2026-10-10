@@ -16,6 +16,8 @@
 #include "src/math.h"
 #include "src/sphere_frag.h"
 #include "src/sphere_vert.h"
+#include "src/text_frag.h"
+#include "src/text_vert.h"
 
 #include <cstdio>
 
@@ -186,92 +188,6 @@ static Input input;
 
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
-
-// Tiny 3x5 font: digits, F, P, S, colon. Each row uses its low three bits.
-constexpr U8 kFpsGlyphs[14][5] = {
-    {0b111, 0b101, 0b101, 0b101, 0b111},
-    {0b010, 0b110, 0b010, 0b010, 0b111},
-    {0b111, 0b001, 0b111, 0b100, 0b111},
-    {0b111, 0b001, 0b111, 0b001, 0b111},
-    {0b101, 0b101, 0b111, 0b001, 0b001},
-    {0b111, 0b100, 0b111, 0b001, 0b111},
-    {0b111, 0b100, 0b111, 0b101, 0b111},
-    {0b111, 0b001, 0b010, 0b010, 0b010},
-    {0b111, 0b101, 0b111, 0b101, 0b111},
-    {0b111, 0b101, 0b111, 0b001, 0b111},
-    {0b111, 0b100, 0b110, 0b100, 0b100},
-    {0b111, 0b101, 0b111, 0b100, 0b100},
-    {0b111, 0b100, 0b111, 0b001, 0b111},
-    {0b000, 0b010, 0b000, 0b010, 0b000},
-};
-
-static void DrawFps() {
-    constexpr U32 kScale = 3;
-    constexpr U32 kMargin = 8;
-    constexpr U32 kPadding = 6;
-    constexpr U32 kMaxCharacters = 10;
-    constexpr U32 kPanelWidth = 2 * kPadding + kMaxCharacters * 4 * kScale;
-    constexpr U32 kPanelHeight = 2 * kPadding + 5 * kScale;
-    if (r.extent.width < kMargin + kPanelWidth || r.extent.height < kMargin + kPanelHeight) {
-        return;
-    }
-    // Clear small rectangles after the scene so the counter stays legible over
-    // both stars and borders. No font textures, extra pipelines or allocations.
-    constexpr VkClearAttachment kBackground = {
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .colorAttachment = 0,
-        .clearValue = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}},
-    };
-    constexpr VkClearRect kPanel = {
-        .rect = {.offset = {.x = kMargin, .y = kMargin}, .extent = {.width = kPanelWidth, .height = kPanelHeight}},
-        .baseArrayLayer = 0,
-        .layerCount = 1,
-    };
-    vkCmdClearAttachments(r.cmd, 1, &kBackground, 1, &kPanel);
-
-    char text[kMaxCharacters + 1];
-    snprintf(text, sizeof(text), "FPS: %u", displayedFps);
-    VkClearRect pixels[kMaxCharacters * 3 * 5];
-    U32 pixelCount = 0;
-    for (U32 i = 0; text[i] != '\0'; ++i) {
-        const char character = text[i];
-        if (character == ' ') {
-            continue;
-        }
-        const U32 glyph = character == 'F'
-                              ? 10
-                              : character == 'P'
-                                    ? 11
-                                    : character == 'S'
-                                          ? 12
-                                          : character == ':'
-                                                ? 13
-                                                : character - '0';
-        for (U32 y = 0; y < 5; ++y) {
-            for (U32 x = 0; x < 3; ++x) {
-                if ((kFpsGlyphs[glyph][y] & (1u << (2 - x))) != 0) {
-                    pixels[pixelCount++] = {
-                        .rect = {
-                            .offset = {
-                                .x = static_cast<I32>(kMargin + kPadding + (i * 4 + x) * kScale),
-                                .y = static_cast<I32>(kMargin + kPadding + y * kScale)
-                            },
-                            .extent = {.width = kScale, .height = kScale},
-                        },
-                        .baseArrayLayer = 0,
-                        .layerCount = 1,
-                    };
-                }
-            }
-        }
-    }
-    constexpr VkClearAttachment kForeground = {
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .colorAttachment = 0,
-        .clearValue = {.color = {.float32 = {1.0f, 1.0f, 1.0f, 1.0f}}},
-    };
-    vkCmdClearAttachments(r.cmd, 1, &kForeground, pixelCount, pixels);
-}
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -569,10 +485,10 @@ static void CreatePipelineLayout() {
     VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &r.pipelineLayout));
 }
 
-// Both pipelines share the layout, the triangle-list topology and alpha
-// blending; only the SPIR-V differs.
+// Scene pipelines use MAX blending; the text overlay uses source-over.
 static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const U32 *fragSpirv,
-                                 const U64 fragSize) {
+                                 const U64 fragSize, const VkPipelineLayout layout,
+                                 const bool overlay = false) {
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
     const VkShaderModuleCreateInfo vertCode = {
@@ -627,21 +543,21 @@ static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const
     // pieces of the same line then saturate instead of stacking up, which
     // matters far away where many segments share a pixel. This works because
     // everything drawn is brighter than what it covers.
-    constexpr VkPipelineColorBlendAttachmentState kBlendAttachment = {
+    const VkPipelineColorBlendAttachmentState blendAttachment = {
         .blendEnable = VK_TRUE,
         .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .colorBlendOp = VK_BLEND_OP_MAX,
+        .dstColorBlendFactor = overlay ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
+        .colorBlendOp = overlay ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .alphaBlendOp = VK_BLEND_OP_MAX,
+        .dstAlphaBlendFactor = overlay ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE,
+        .alphaBlendOp = overlay ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
     const VkPipelineColorBlendStateCreateInfo blend = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1,
-        .pAttachments = &kBlendAttachment,
+        .pAttachments = &blendAttachment,
     };
 
     // Viewport and scissor stay dynamic so a resize never rebuilds the
@@ -675,7 +591,7 @@ static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const
         .pMultisampleState = &kMultisample,
         .pColorBlendState = &blend,
         .pDynamicState = &dynamic,
-        .layout = r.pipelineLayout,
+        .layout = layout,
     };
     VkPipeline pipeline;
     VK_CHECK(vkCreateGraphicsPipelines(r.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
@@ -705,6 +621,8 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
     };
     vkCmdPipelineBarrier2(r.cmd, &dependency);
 }
+
+#include "src/text.h"
 
 static CameraBasis ComputeBasis() {
     const F32 cosPitch = Cos(camera.pitch);
@@ -978,8 +896,9 @@ int main() {
     InitVulkan(hwnd);
     CreateVertexBuffer();
     CreatePipelineLayout();
-    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag));
-    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag));
+    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
+    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
+    InitText();
 
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
@@ -993,6 +912,7 @@ int main() {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 vkDeviceWaitIdle(r.device);
+                DestroyText();
                 return 0;
             }
             TranslateMessage(&msg);

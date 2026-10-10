@@ -38,11 +38,26 @@ glsl_header(
     variable = "kSphereFrag",
 )
 
+glsl_header(
+    name = "text_vert",
+    src = "text.vert",
+    variable = "kTextVert",
+)
+
+glsl_header(
+    name = "text_frag",
+    src = "text.frag",
+    variable = "kTextFrag",
+)
+
 cc_binary(
     name = "app",
     srcs = [
         "borders.h",
         "main.cc",
+        "text.h",
+        ":text_vert",
+        ":text_frag",
         ":earth_frag",
         ":earth_vert",
         ":sphere_frag",
@@ -51,6 +66,7 @@ cc_binary(
     linkopts = select({
         "@platforms//os:windows": [
             "/DEFAULTLIB:user32.lib",
+            "/DEFAULTLIB:gdi32.lib",
         ],
         "//conditions:default": [],
     }),

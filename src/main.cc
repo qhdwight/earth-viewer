@@ -14,6 +14,9 @@
 #include "src/earth_frag.h"
 #include "src/earth_vert.h"
 #include "src/math.h"
+#include "src/satellite_frag.h"
+#include "src/satellite_vert.h"
+#include "src/satellites.h"
 #include "src/sphere_frag.h"
 #include "src/sphere_vert.h"
 #include "src/sun.h"
@@ -131,6 +134,27 @@ static_assert(offsetof(PushConstants, line) == 80);
 static_assert(offsetof(PushConstants, sunDirection) == 96);
 static_assert(offsetof(PushConstants, vertexBuffer) == 112);
 
+// Satellites are dots with a fixed radius on the ground scale, like the border
+// lines, with a minimum size on screen set in satellite.vert.
+constexpr F32 kSatelliteRadiusWorld = 0.0005f; // Earth radii, about 3 km
+constexpr U32 kVerticesPerSprite = 6;
+constexpr U64 kSatelliteBufferSize = kSatelliteCount * 4 * sizeof(F32);
+
+// Matches the push_constant block in satellite.vert.
+struct SatellitePush {
+    Mat4 viewProj;
+    F32 cameraPos[4];
+    F32 sunDirection[4];
+    // x: dot radius in world units, y: world units per pixel per unit of view
+    // depth, zw: clip-space offset per world unit across the view.
+    F32 sprite[4];
+    VkDeviceAddress positions;
+};
+
+static_assert(sizeof(SatellitePush) == 120);
+static_assert(offsetof(SatellitePush, sprite) == 96);
+static_assert(offsetof(SatellitePush, positions) == 112);
+
 // ---------------------------------------------------------------------------
 
 struct Camera {
@@ -184,6 +208,14 @@ struct Renderer {
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline spherePipeline = VK_NULL_HANDLE;
     VkPipeline linePipeline = VK_NULL_HANDLE;
+
+    // Satellite positions as vec4 in world space, rewritten every frame.
+    VkBuffer satelliteBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory satelliteMemory = VK_NULL_HANDLE;
+    VkDeviceAddress satelliteAddress = 0;
+    F32 *satellitePositions = nullptr;
+    VkPipelineLayout satelliteLayout = VK_NULL_HANDLE;
+    VkPipeline satellitePipeline = VK_NULL_HANDLE;
 };
 
 static Renderer r;
@@ -195,6 +227,8 @@ static U32 displayedFps = 0;
 // UTC as Windows FILETIME ticks, sampled once per frame so the Sun and the
 // clock overlay agree.
 static U64 frameUtcTicks = 0;
+// ECEF orbit states, advanced by real elapsed time every frame.
+static OrbitState satelliteStates[kSatelliteCount];
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -426,17 +460,20 @@ static void InitVulkan(HWND hwnd) {
 // Bindless vertex fetch: the vertices live in a plain buffer whose GPU virtual
 // address (VK_KHR_buffer_device_address, core 1.2) is handed to the vertex
 // shader through a push constant. No descriptor sets, no vertex input state.
-static void CreateVertexBuffer() {
-    constexpr VkBufferCreateInfo kBufferInfo = {
+// Creates a host-visible buffer that shaders read through its device address
+// and returns it persistently mapped.
+static void *CreateMappedBuffer(const U64 size, VkBuffer &buffer, VkDeviceMemory &memory,
+                                VkDeviceAddress &address) {
+    const VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = kVertexBufferSize,
+        .size = size,
         .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VK_CHECK(vkCreateBuffer(r.device, &kBufferInfo, nullptr, &r.vertexBuffer));
+    VK_CHECK(vkCreateBuffer(r.device, &bufferInfo, nullptr, &buffer));
 
     VkMemoryRequirements requirements;
-    vkGetBufferMemoryRequirements(r.device, r.vertexBuffer, &requirements);
+    vkGetBufferMemoryRequirements(r.device, buffer, &requirements);
 
     constexpr VkMemoryPropertyFlags kWanted =
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -454,13 +491,23 @@ static void CreateVertexBuffer() {
         .allocationSize = requirements.size,
         .memoryTypeIndex = memoryType,
     };
-    VK_CHECK(vkAllocateMemory(r.device, &allocInfo, nullptr, &r.vertexMemory));
-    VK_CHECK(vkBindBufferMemory(r.device, r.vertexBuffer, r.vertexMemory, 0));
+    VK_CHECK(vkAllocateMemory(r.device, &allocInfo, nullptr, &memory));
+    VK_CHECK(vkBindBufferMemory(r.device, buffer, memory, 0));
 
-    // Expand every ring into line segments straight into the mapped buffer.
     void *mapped;
-    VK_CHECK(vkMapMemory(r.device, r.vertexMemory, 0, kVertexBufferSize, 0, &mapped));
-    U32 *dst = static_cast<U32 *>(mapped);
+    VK_CHECK(vkMapMemory(r.device, memory, 0, size, 0, &mapped));
+    const VkBufferDeviceAddressInfo addressInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer = buffer,
+    };
+    address = vkGetBufferDeviceAddress(r.device, &addressInfo);
+    return mapped;
+}
+
+static void CreateVertexBuffer() {
+    // Expand every ring into line segments straight into the mapped buffer.
+    U32 *dst = static_cast<U32 *>(CreateMappedBuffer(kVertexBufferSize, r.vertexBuffer, r.vertexMemory,
+                                                     r.vertexAddress));
     U32 written = 0;
     for (const BorderRing &ring: kBorderRings) {
         for (U32 i = ring.first; i + 1 < ring.first + ring.count; ++i) {
@@ -470,26 +517,27 @@ static void CreateVertexBuffer() {
     }
     if (written != kSegmentPointCount) Die("expanding border rings", written);
     vkUnmapMemory(r.device, r.vertexMemory);
-
-    const VkBufferDeviceAddressInfo addressInfo = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = r.vertexBuffer,
-    };
-    r.vertexAddress = vkGetBufferDeviceAddress(r.device, &addressInfo);
 }
 
-static void CreatePipelineLayout() {
-    constexpr VkPushConstantRange kPushRange = {
+static void CreateSatelliteBuffer() {
+    r.satellitePositions = static_cast<F32 *>(CreateMappedBuffer(kSatelliteBufferSize, r.satelliteBuffer,
+                                                                 r.satelliteMemory, r.satelliteAddress));
+}
+
+static VkPipelineLayout CreatePushLayout(const U32 pushSize) {
+    const VkPushConstantRange pushRange = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
-        .size = sizeof(PushConstants),
+        .size = pushSize,
     };
     const VkPipelineLayoutCreateInfo layoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &kPushRange,
+        .pPushConstantRanges = &pushRange,
     };
-    VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &r.pipelineLayout));
+    VkPipelineLayout layout;
+    VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &layout));
+    return layout;
 }
 
 // Scene pipelines use MAX blending; the text overlay uses source-over.
@@ -706,8 +754,30 @@ static PushConstants BuildPushConstants() {
     };
 }
 
+static SatellitePush BuildSatellitePush(const PushConstants &scene) {
+    const F32 height = static_cast<F32>(r.extent.height);
+    const F32 aspect = static_cast<F32>(r.extent.width) / height;
+    return {
+        .viewProj = scene.viewProj,
+        .cameraPos = {scene.cameraPos[0], scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3]},
+        .sunDirection = {scene.sunDirection[0], scene.sunDirection[1], scene.sunDirection[2], scene.sunDirection[3]},
+        .sprite = {kSatelliteRadiusWorld, 2.0f / (height * kFovScale), kFovScale / aspect, kFovScale},
+        .positions = r.satelliteAddress,
+    };
+}
+
 static bool DrawFrame() {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
+
+    // The fence guarantees the GPU has finished reading last frame's positions.
+    for (U32 i = 0; i < kSatelliteCount; ++i) {
+        const Vec3 p = WorldFromEcef(satelliteStates[i].position);
+        F32 *const dst = r.satellitePositions + 4 * i;
+        dst[0] = p.x;
+        dst[1] = p.y;
+        dst[2] = p.z;
+        dst[3] = 1.0f;
+    }
 
     U32 image;
     const VkResult acquired = vkAcquireNextImageKHR(r.device, r.swapchain, kWaitForever,
@@ -780,6 +850,12 @@ static bool DrawFrame() {
     vkCmdDraw(r.cmd, kFullScreenVertexCount, kInstanceCount, 0, 0);
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linePipeline);
     vkCmdDraw(r.cmd, kDrawVertexCount, kInstanceCount, 0, 0);
+
+    const SatellitePush satellitePush = BuildSatellitePush(push);
+    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.satellitePipeline);
+    vkCmdPushConstants(r.cmd, r.satelliteLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(satellitePush), &satellitePush);
+    vkCmdDraw(r.cmd, kVerticesPerSprite * kSatelliteCount, kInstanceCount, 0, 0);
 
     DrawOverlay();
 
@@ -906,9 +982,14 @@ int main() {
 
     InitVulkan(hwnd);
     CreateVertexBuffer();
-    CreatePipelineLayout();
+    CreateSatelliteBuffer();
+    InitConstellation(satelliteStates);
+    r.pipelineLayout = CreatePushLayout(sizeof(PushConstants));
+    r.satelliteLayout = CreatePushLayout(sizeof(SatellitePush));
     r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
     r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
+    r.satellitePipeline = CreatePipeline(kSatelliteVert, sizeof(kSatelliteVert), kSatelliteFrag,
+                                         sizeof(kSatelliteFrag), r.satelliteLayout);
     InitText();
 
     LARGE_INTEGER frequency;
@@ -917,6 +998,9 @@ int main() {
     QueryPerformanceCounter(&lastTime);
     LARGE_INTEGER fpsStart = lastTime;
     U32 fpsFrames = 0;
+    // Unlike lastTime, this is not reset after a minimize, so the satellites
+    // catch up on the time they missed and stay in real time.
+    LARGE_INTEGER satelliteTime = lastTime;
 
     for (;;) {
         MSG msg;
@@ -945,6 +1029,10 @@ int main() {
         const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
         lastTime = now;
         UpdateCamera(Min(dt, kMaxFrameSeconds));
+        const F64 satelliteSeconds = static_cast<F64>(now.QuadPart - satelliteTime.QuadPart) /
+                                     static_cast<F64>(frequency.QuadPart);
+        satelliteTime = now;
+        PropagateConstellation(satelliteStates, kSatelliteCount, satelliteSeconds);
         FILETIME utcNow;
         GetSystemTimeAsFileTime(&utcNow);
         frameUtcTicks = (static_cast<U64>(utcNow.dwHighDateTime) << 32) | utcNow.dwLowDateTime;

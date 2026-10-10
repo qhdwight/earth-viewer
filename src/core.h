@@ -17,6 +17,7 @@ using F64 = double;
 
 inline constexpr F32 kPi = 3.14159265f;
 inline constexpr F32 kTau = 2.0f * kPi;
+inline constexpr F32 kRadiansPerDegree = kPi / 180.0f;
 inline constexpr F32 kE = 2.71828183f;
 inline constexpr F32 kSqrt2 = 1.41421356f;
 inline constexpr F32 kSqrt3 = 1.73205081f;

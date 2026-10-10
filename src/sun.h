@@ -7,7 +7,6 @@
 // The J2000.0 epoch, 2000-01-01 12:00 UTC, is 145731 and a half days after
 // the FILETIME epoch.
 inline constexpr U64 kJ2000Ticks = 145731 * kTicksPerDay + kTicksPerDay / 2;
-inline constexpr F32 kRadiansPerDegree = kPi / 180.0f;
 
 // Angles below grow by about a degree a day, and Earth's rotation by about
 // 361, so they are wrapped to one turn in double precision before becoming

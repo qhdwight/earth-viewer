@@ -60,12 +60,25 @@ glsl_header(
     variable = "kTextFrag",
 )
 
+glsl_header(
+    name = "satellite_vert",
+    src = "satellite.vert",
+    variable = "kSatelliteVert",
+)
+
+glsl_header(
+    name = "satellite_frag",
+    src = "satellite.frag",
+    variable = "kSatelliteFrag",
+)
+
 cc_binary(
     name = "app",
     srcs = [
         "borders.h",
         "clock.h",
         "main.cc",
+        "satellites.h",
         "sun.h",
         "text.h",
         ":text_vert",
@@ -74,6 +87,8 @@ cc_binary(
         ":earth_vert",
         ":sphere_frag",
         ":sphere_vert",
+        ":satellite_frag",
+        ":satellite_vert",
     ],
     linkopts = select({
         "@platforms//os:windows": [
@@ -84,6 +99,7 @@ cc_binary(
     }),
     deps = [
         ":core",
+        ":j2",
         ":math",
         "//src/array",
         "//src/bit",

@@ -424,6 +424,9 @@ static void InitVulkan(HWND hwnd) {
     VkPhysicalDeviceVulkan13Features features13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .pNext = &features12,
+        // glslang compiles discard to demote-to-helper for Vulkan 1.3 targets,
+        // which keeps derivatives valid around it. Required of every 1.3 device.
+        .shaderDemoteToHelperInvocation = VK_TRUE,
         .synchronization2 = VK_TRUE,
         .dynamicRendering = VK_TRUE,
     };
@@ -715,6 +718,7 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
     vkCmdPipelineBarrier2(r.cmd, &dependency);
 }
 
+#include "src/slug.h"
 #include "src/text.h"
 
 static CameraBasis ComputeBasis() {

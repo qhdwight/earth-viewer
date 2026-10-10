@@ -91,6 +91,7 @@ cc_binary(
         "clock.h",
         "main.cc",
         "satellites.h",
+        "slug.h",
         "stations.h",
         "sun.h",
         "text.h",

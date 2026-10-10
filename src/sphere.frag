@@ -11,6 +11,14 @@ layout(push_constant) uniform PushConstants {
 const vec3 kSphereColor = vec3(0.005); // linear; the swapchain is sRGB
 const float kStarGridScale = 180.0;
 const float kStarDensity = 0.025;
+const float kPi = 3.14159265;
+
+// The glow is a thin haze whose density falls off exponentially with height
+// above the surface. Its size is physical, in Earth radii, so it scales with
+// zoom like everything else.
+const float kGlowScaleHeight = 0.02; // about 250 km
+const float kGlowGain = 1.8;
+const vec3 kGlowColor = vec3(1.0);
 
 uvec3 HashCell(const ivec3 cell) {
     // Every output must depend on all three coordinates. Pairwise mixing
@@ -51,6 +59,47 @@ vec3 StarField(const vec3 direction, const float pixelAngle) {
     return color;
 }
 
+// Probability that a standard normal variable is below x. Logistic fit with
+// error under 0.01.
+float NormalCdf(const float x) {
+    return 1.0 / (1.0 + exp(-1.702 * x));
+}
+
+// Amount of haze along the ray o + t d for t >= 0, stopping at the surface
+// when hit is true. Grazing rays cross far more haze than steep ones, which
+// is what makes the outline glow. b is dot(o, d).
+float GlowDepth(const vec3 o, const vec3 d, const float b, const bool hit) {
+    const float h = kGlowScaleHeight;
+    const float r = length(o);
+    const float altitude = r - 1.0;
+    if (hit) {
+        // Slant path from the camera down to the surface through locally
+        // flat haze. The 2h/pi term caps it at the curved value when grazing.
+        const float t = -b - sqrt(max(b * b - dot(o, o) + 1.0, 0.0));
+        const float mu = dot(normalize(o + d * t), -d);
+        return h * (1.0 - exp(-altitude / h)) / sqrt(mu * mu + 2.0 * h / kPi);
+    }
+    if (b >= 0.0) {
+        // Looking away from the globe: the densest point is the camera.
+        const float mu = b / r;
+        return h * exp(-altitude / h) / sqrt(mu * mu + 2.0 * h / (kPi * r));
+    }
+    // Passing the globe: altitude along the ray is nearly a parabola around
+    // the closest approach, so the density along t is a Gaussian. Clamping
+    // keeps limb pixels that partly cover the globe finite.
+    const float closest = max(sqrt(max(dot(o, o) - b * b, 0.0)), 1.0);
+    const float sigma = sqrt(closest * h);
+    return exp(-(closest - 1.0) / h) * sqrt(2.0 * kPi) * sigma * NormalCdf(-b / sigma);
+}
+
+// Squaring the depth is a contrast curve: thin paths, such as looking
+// straight down at the globe or straight up from near the ground, stay
+// almost black while grazing paths glow.
+vec3 Glow(const float depth) {
+    const float x = kGlowGain * depth;
+    return kGlowColor * (1.0 - exp(-x * x));
+}
+
 void main() {
     // Nearest intersection of the ray o + t d with the unit sphere:
     // t^2 + 2 t (o.d) + (o.o - 1) = 0.
@@ -67,6 +116,9 @@ void main() {
     if (alpha < 1.0) {
         background = StarField(d, pixelAngle);
     }
+    // Both glow paths are evaluated so limb pixels blend them smoothly.
+    const vec3 sky = background + Glow(GlowDepth(o, d, b, false));
+    const vec3 globe = kSphereColor + Glow(GlowDepth(o, d, b, true));
     // Composite here so the globe occludes stars even with MAX blending.
-    outColor = vec4(mix(background, kSphereColor, alpha), 1.0);
+    outColor = vec4(mix(sky, globe, alpha), 1.0);
 }

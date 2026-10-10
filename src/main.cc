@@ -192,6 +192,9 @@ static Input input;
 
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
+// UTC as Windows FILETIME ticks, sampled once per frame so the Sun and the
+// clock overlay agree.
+static U64 frameUtcTicks = 0;
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -629,9 +632,11 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
 #include "src/text.h"
 
 static CameraBasis ComputeBasis() {
-    const F32 cosPitch = Cos(camera.pitch);
-    const Vec3 forward = {Sin(camera.yaw) * cosPitch, Sin(camera.pitch), -Cos(camera.yaw) * cosPitch};
-    const Vec3 right = {Cos(camera.yaw), 0.0f, Sin(camera.yaw)};
+    F32 sinYaw, cosYaw, sinPitch, cosPitch;
+    SinCos(camera.yaw, sinYaw, cosYaw);
+    SinCos(camera.pitch, sinPitch, cosPitch);
+    const Vec3 forward = {sinYaw * cosPitch, sinPitch, -cosYaw * cosPitch};
+    const Vec3 right = {cosYaw, 0.0f, sinYaw};
     return {.right = right, .up = Cross(right, forward), .forward = forward};
 }
 
@@ -690,9 +695,7 @@ static PushConstants BuildPushConstants() {
     const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
     const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * unitsPerPixelPerDepth;
     const F32 aaPaddingPerDepth = kLineAaPaddingPixels * unitsPerPixelPerDepth;
-    FILETIME now;
-    GetSystemTimeAsFileTime(&now);
-    const Vec3 sun = SunDirection((static_cast<U64>(now.dwHighDateTime) << 32) | now.dwLowDateTime);
+    const Vec3 sun = SunDirection(frameUtcTicks);
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
                              View(camera.position, basis.right, basis.up, basis.forward)),
@@ -778,7 +781,7 @@ static bool DrawFrame() {
     vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linePipeline);
     vkCmdDraw(r.cmd, kDrawVertexCount, kInstanceCount, 0, 0);
 
-    DrawFps();
+    DrawOverlay();
 
     vkCmdEndRendering(r.cmd);
 
@@ -942,6 +945,9 @@ int main() {
         const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
         lastTime = now;
         UpdateCamera(Min(dt, kMaxFrameSeconds));
+        FILETIME utcNow;
+        GetSystemTimeAsFileTime(&utcNow);
+        frameUtcTicks = (static_cast<U64>(utcNow.dwHighDateTime) << 32) | utcNow.dwLowDateTime;
         if (DrawFrame()) {
             ++fpsFrames;
         }

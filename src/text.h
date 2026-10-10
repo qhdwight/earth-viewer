@@ -319,15 +319,66 @@ static void DestroyText() {
     vkFreeMemory(r.device, textRenderer.bufferMemory, nullptr);
 }
 
-static void DrawFps() {
+// Widest line of a string in pixels at scale 1, using AppendText's glyph
+// substitution.
+static F32 TextWidth(const char *string) {
+    F32 widest = 0.0f;
+    F32 width = 0.0f;
+    for (; *string != '\0'; ++string) {
+        const U8 character = static_cast<U8>(*string);
+        if (character == '\n') {
+            widest = Max(widest, width);
+            width = 0.0f;
+            continue;
+        }
+        const U32 glyph = character >= kFontFirst && character < kFontFirst + kFontCount ?
+                          character - kFontFirst : '?' - kFontFirst;
+        width += textRenderer.advance[glyph];
+    }
+    return Max(widest, width);
+}
+
+constexpr F32 kPanelMargin = 8.0f;
+constexpr F32 kPanelPadding = 6.0f;
+constexpr F32 kLineHeight = 24.0f; // matches the newline step in AppendText
+constexpr U32 kClockLines = 3;
+
+// A solid panel uses the reserved white texel and shares the text batch.
+static void AppendPanel(const F32 x, const F32 y, const F32 width, const F32 height) {
+    const F32 whiteU = (kFontWidth - 0.5f) / kFontWidth;
+    const F32 whiteV = (kFontHeight - 0.5f) / kFontHeight;
+    AppendTextQuad(x, y, width, height, whiteU, whiteV, whiteU, whiteV, 0.0f, 0.0f, 0.0f, 0.9f);
+}
+
+static void AppendClock() {
+    const I64 utc = UnixSecondsFromFileTime(frameUtcTicks);
+    const bool daylight = IsPacificDaylightTime(utc);
+    const CivilTime pacific = CivilFromUnixSeconds(utc + (daylight ? kPacificDaylightOffset : kPacificStandardOffset));
+    const CivilTime universal = CivilFromUnixSeconds(utc);
+    const I64 gps = GpsSecondsFromUnix(utc);
+    char label[128];
+    snprintf(label, sizeof(label),
+             "%s  %04d-%02u-%02u %02u:%02u:%02u\n"
+             "UTC  %04d-%02u-%02u %02u:%02u:%02u\n"
+             "GPS  %lld (week %lld, %lld s)",
+             daylight ? "PDT" : "PST",
+             pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute, pacific.second,
+             universal.year, universal.month, universal.day, universal.hour, universal.minute, universal.second,
+             gps, gps / kSecondsPerWeek, gps % kSecondsPerWeek);
+    const F32 width = TextWidth(label) + 2.0f * kPanelPadding;
+    const F32 height = kClockLines * kLineHeight + 2.0f * kPanelPadding;
+    const F32 x = static_cast<F32>(r.extent.width) - kPanelMargin - width;
+    AppendPanel(x, kPanelMargin, width, height);
+    AppendText(label, x + kPanelPadding, kPanelMargin + kPanelPadding);
+}
+
+static void DrawOverlay() {
     textRenderer.quadCount = 0;
     char label[11];
     snprintf(label, sizeof(label), "FPS: %u", displayedFps);
-    // A solid panel uses the reserved white texel and shares the text batch.
-    const F32 whiteU = (kFontWidth - 0.5f) / kFontWidth;
-    const F32 whiteV = (kFontHeight - 0.5f) / kFontHeight;
-    AppendTextQuad(8.0f, 8.0f, 132.0f, 32.0f, whiteU, whiteV, whiteU, whiteV, 0.0f, 0.0f, 0.0f, 0.9f);
-    AppendText(label, 14.0f, 14.0f);
+    AppendPanel(kPanelMargin, kPanelMargin, 132.0f, 32.0f);
+    AppendText(label, kPanelMargin + kPanelPadding, kPanelMargin + kPanelPadding);
+    AppendClock();
     const TextPush push = {
         .screenScale = {2.0f / r.extent.width, 2.0f / r.extent.height},
         .vertices = textRenderer.address,

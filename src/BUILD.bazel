@@ -54,6 +54,7 @@ cc_binary(
     name = "app",
     srcs = [
         "borders.h",
+        "clock.h",
         "main.cc",
         "sun.h",
         "text.h",

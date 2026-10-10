@@ -30,24 +30,25 @@ inline F32 Length(const Vec3 a) { return Sqrt(Dot(a, a)); }
 
 inline Vec3 Normalize(const Vec3 a) { return Scale(a, 1.0f / Length(a)); }
 
-// Taylor series after reducing to [-pi/2, pi/2]; error is below 1e-5.
-inline F32 Sin(F32 x) {
-    const F32 turns = (x + kPi) / kTau;
-    I32 whole = static_cast<I32>(turns);
-    if (static_cast<F32>(whole) > turns) {
-        whole -= 1;
+// Both values come from one range reduction: x = r + q * pi/2 with r in
+// [-pi/4, pi/4], where short Taylor series for sin r and cos r are accurate to
+// about 3e-7. The quadrant q then swaps and negates them.
+inline void SinCos(const F32 x, F32 &sine, F32 &cosine) {
+    const F32 quarterTurns = x * (2.0f / kPi);
+    I32 quadrant = static_cast<I32>(quarterTurns + 0.5f);
+    if (static_cast<F32>(quadrant) > quarterTurns + 0.5f) {
+        quadrant -= 1; // truncation rounded a negative value up
     }
-    x -= static_cast<F32>(whole) * kTau;
-    if (x > 0.5f * kPi) {
-        x = kPi - x;
-    } else if (x < -0.5f * kPi) {
-        x = -kPi - x;
-    }
-    const F32 x2 = x * x;
-    return x * (1.0f + x2 * (-1.0f / 6.0f + x2 * (1.0f / 120.0f + x2 * (-1.0f / 5040.0f + x2 * (1.0f / 362880.0f)))));
+    const F32 r = x - static_cast<F32>(quadrant) * (0.5f * kPi);
+    const F32 r2 = r * r;
+    const F32 s = r * (1.0f + r2 * (-1.0f / 6.0f + r2 * (1.0f / 120.0f + r2 * (-1.0f / 5040.0f))));
+    const F32 c = 1.0f + r2 * (-1.0f / 2.0f + r2 * (1.0f / 24.0f + r2 * (-1.0f / 720.0f + r2 * (1.0f / 40320.0f))));
+    // sin(r + pi/2) = cos r and cos(r + pi/2) = -sin r; a half turn negates both.
+    const bool odd = (quadrant & 1) != 0;
+    const F32 sign = (quadrant & 2) != 0 ? -1.0f : 1.0f;
+    sine = sign * (odd ? c : s);
+    cosine = sign * (odd ? -s : c);
 }
-
-inline F32 Cos(const F32 x) { return Sin(x + 0.5f * kPi); }
 
 // Vulkan clip space: y points down, depth spans [0, 1]. Far plane at infinity.
 // fovScale is 1 / tan(verticalFov / 2).

@@ -16,8 +16,9 @@ layout(push_constant) uniform SatellitePush {
     mat4 viewProj;
     vec4 cameraPos;
     vec4 sunDirection;
-    // x: dot radius in world units, y: world units per pixel per unit of view
-    // depth, zw: clip-space offset per world unit across the view.
+    // x: dot radius in world units, y: world units per UI pixel per unit of
+    // view depth, zw: clip-space offset per world unit across the view. A UI
+    // pixel is a pixel at 100% display scaling.
     vec4 sprite;
     Positions positions;
 } pc;
@@ -26,7 +27,7 @@ const int kVerticesPerSprite = 6;
 const vec2 kCorners[kVerticesPerSprite] = vec2[kVerticesPerSprite](
     vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
     vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
-// Dots never shrink below this on screen, like the border lines.
+// Dots never shrink below this on screen, in UI pixels, like the border lines.
 const float kMinRadiusPixels = 2.0;
 const float kHaloRadii = 3.0; // must match satellite.frag
 const vec3 kSunlitColor = vec3(1.0, 0.72, 0.28);

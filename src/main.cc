@@ -2,6 +2,10 @@
 #ifndef NOMINMAX  // Bazel predefines this on Windows
 #define NOMINMAX
 #endif
+// Bazel's MSVC toolchain targets Windows 7; the per-monitor DPI functions need
+// the Windows 10 declarations.
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
 #include <windows.h>
 
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -125,6 +129,7 @@ struct PushConstants {
     // x: half line width in world units.
     // y: minimum half line width in world units per unit of view depth.
     // z: anti-aliasing padding in world units per unit of view depth.
+    // w: UI scale, for screen-space sizes in sphere.frag.
     F32 line[4];
     // xyz: unit vector toward the Sun, for the glow in sphere.frag.
     F32 sunDirection[4];
@@ -154,8 +159,8 @@ struct SatellitePush {
     Mat4 viewProj;
     F32 cameraPos[4];
     F32 sunDirection[4];
-    // x: dot radius in world units, y: world units per pixel per unit of view
-    // depth, zw: clip-space offset per world unit across the view.
+    // x: dot radius in world units, y: world units per UI pixel per unit of
+    // view depth, zw: clip-space offset per world unit across the view.
     F32 sprite[4];
     VkDeviceAddress positions;
 };
@@ -240,6 +245,12 @@ static Input input;
 
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
+// Physical pixels per UI pixel, a pixel at 100% Windows display scaling. The
+// app is per-monitor DPI aware and renders at full resolution, so sizes meant
+// for the screen, like text, minimum line widths and dots, are given in UI
+// pixels and multiplied by this. Updated when the window changes monitors.
+static F32 uiScale = 1.0f;
+constexpr U32 kDefaultDpi = 96;
 // UTC as Windows FILETIME ticks, sampled once per frame so the Sun and the
 // clock overlay agree.
 static U64 frameUtcTicks = 0;
@@ -733,8 +744,8 @@ static CameraBasis ComputeBasis() {
 // Free-fly camera: drag the mouse to look, WASD to move along the view, Q/E
 // down/up, Shift to go faster.
 static void UpdateCamera(const F32 dt) {
-    camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel;
-    camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel;
+    camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel / uiScale;
+    camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel / uiScale;
     camera.pitch = Clamp(camera.pitch, -kMaxPitch, kMaxPitch);
     if (camera.yaw > kPi) {
         camera.yaw -= kTau;
@@ -783,14 +794,14 @@ static PushConstants BuildPushConstants() {
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
     const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
-    const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * unitsPerPixelPerDepth;
+    const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * uiScale * unitsPerPixelPerDepth;
     const F32 aaPaddingPerDepth = kLineAaPaddingPixels * unitsPerPixelPerDepth;
     const Vec3 sun = SunDirection(frameUtcTicks);
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
                              View(camera.position, basis.right, basis.up, basis.forward)),
         .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
-        .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, 0.0f},
+        .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, uiScale},
         .sunDirection = {sun.x, sun.y, sun.z, 0.0f},
         .vertexBuffer = r.vertexAddress,
     };
@@ -803,7 +814,7 @@ static SatellitePush BuildSatellitePush(const PushConstants &scene) {
         .viewProj = scene.viewProj,
         .cameraPos = {scene.cameraPos[0], scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3]},
         .sunDirection = {scene.sunDirection[0], scene.sunDirection[1], scene.sunDirection[2], scene.sunDirection[3]},
-        .sprite = {kSatelliteRadiusWorld, 2.0f / (height * kFovScale), kFovScale / aspect, kFovScale},
+        .sprite = {kSatelliteRadiusWorld, uiScale * 2.0f / (height * kFovScale), kFovScale / aspect, kFovScale},
         .positions = r.satelliteAddress,
     };
 }
@@ -898,7 +909,7 @@ static bool DrawFrame() {
         const F32 unitsPerPixelPerDepth = 2.0f / (static_cast<F32>(r.extent.height) * kFovScale);
         PushConstants linkPush = push;
         linkPush.line[0] = 0.5f * kLinkWidthWorld;
-        linkPush.line[1] = 0.5f * kMinLinkWidthPixels * unitsPerPixelPerDepth;
+        linkPush.line[1] = 0.5f * kMinLinkWidthPixels * uiScale * unitsPerPixelPerDepth;
         linkPush.vertexBuffer = r.linkAddress;
         vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linkPipeline);
         vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -971,6 +982,15 @@ static POINT MousePoint(const LPARAM lparam) {
 
 static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam) {
     switch (msg) {
+        case WM_DPICHANGED: {
+            // Take the new monitor's scale and the size Windows suggests for
+            // it; the swapchain follows the resize on the next frame.
+            uiScale = static_cast<F32>(HIWORD(wparam)) / static_cast<F32>(kDefaultDpi);
+            const RECT *const suggested = reinterpret_cast<const RECT *>(lparam);
+            SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                         suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
         case WM_DESTROY: {
             PostQuitMessage(0);
             return 0;
@@ -1028,11 +1048,20 @@ int main() {
         .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(kIdcArrow)),
         .lpszClassName = kClassName,
     };
+    // Without this Windows renders the app at 96 DPI and stretches the result
+    // on scaled displays, which blurs text and thin lines.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     RegisterClassW(&wc);
     HWND hwnd = CreateWindowExW(0, kClassName, kWindowTitle, WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, kWindowWidth,
                                 kWindowHeight, nullptr, nullptr, hinstance, nullptr);
     if (!hwnd) Die("CreateWindowExW", static_cast<I64>(GetLastError()));
+    // The window size is in UI pixels; scale it for the monitor it opened on.
+    const UINT dpi = GetDpiForWindow(hwnd);
+    uiScale = static_cast<F32>(dpi) / static_cast<F32>(kDefaultDpi);
+    SetWindowPos(hwnd, nullptr, 0, 0, MulDiv(static_cast<int>(kWindowWidth), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
+                 MulDiv(static_cast<int>(kWindowHeight), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     ShowWindow(hwnd, SW_SHOW);
 
     InitVulkan(hwnd);

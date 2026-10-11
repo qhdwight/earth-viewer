@@ -6,7 +6,8 @@ layout(location = 0) out vec4 outColor;
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
     vec4 cameraPos;
-    layout(offset = 96) vec4 sunDirection;
+    layout(offset = 80) vec4 line; // w: UI scale, physical pixels per UI pixel
+    vec4 sunDirection;
 } pc;
 
 const vec3 kSphereColor = vec3(0.005); // linear; the swapchain is sRGB
@@ -128,7 +129,8 @@ void main() {
     const float alpha = b < 0.0 ? smoothstep(0.0, limbWidth, discriminant) : 0.0;
     vec3 background = vec3(0.0);
     if (alpha < 1.0) {
-        background = StarField(d, pixelAngle);
+        // Star sizes are in UI pixels, so they look the same at any display scaling.
+        background = StarField(d, pixelAngle * pc.line.w);
     }
     // Both glow paths are evaluated so limb pixels blend them smoothly.
     // Each path is lit by the Sun at its densest point: the closest approach

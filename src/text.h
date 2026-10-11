@@ -12,7 +12,13 @@ constexpr U32 kTextMaxQuads = 4096;
 // The reference README's tip for crisp text without hinting: size the font so
 // capital letters are a whole number of pixels tall, and put the baseline on
 // a pixel boundary, so their tops and bottoms land on the pixel grid.
-constexpr F32 kTextCapHeightPixels = 12.0f;
+constexpr F32 kTextCapHeightPixels = 12.0f; // UI pixels; rounded to whole physical pixels
+// Panel layout, in UI pixels.
+constexpr F32 kPanelMargin = 8.0f;
+constexpr F32 kPanelPadding = 6.0f;
+constexpr F32 kLineHeight = 24.0f;
+constexpr F32 kFpsPanelWidth = 132.0f;
+constexpr F32 kFpsPanelHeight = 32.0f;
 // Marks quads that text.frag fills solid, for panels. Bit 15 of the band
 // maxima word, which Slug glyph data leaves zero.
 constexpr U32 kTextSolidFlag = 0x8000;
@@ -148,9 +154,16 @@ static void UploadFont(U8 *const staging) {
     VK_CHECK(vkResetCommandPool(r.device, r.pool, 0));
 }
 
+static F32 RoundPixels(const F32 value);
+
+// Text and panel sizes are in UI pixels; the result is rounded to whole
+// physical pixels so baselines, cap heights and panel edges stay on the grid.
+static F32 UiPixels(const F32 value) {
+    return RoundPixels(value * uiScale);
+}
+
 static void InitText() {
     BuildSlugFont(slugFont);
-    textRenderer.pixelsPerEm = kTextCapHeightPixels / slugFont.capHeight;
 
     const VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -284,7 +297,7 @@ static bool AppendText(const char *string, const F32 x, const F32 y, const F32 s
         const U8 character = static_cast<U8>(*string);
         if (character == '\n') {
             penX = x;
-            lineTop += 24.0f * scale;
+            lineTop += UiPixels(kLineHeight) * scale;
             continue;
         }
         const SlugGlyph &glyph = slugFont.glyphs[GlyphIndex(character)];
@@ -323,9 +336,6 @@ static F32 TextWidth(const char *string) {
     return Max(widest, width);
 }
 
-constexpr F32 kPanelMargin = 8.0f;
-constexpr F32 kPanelPadding = 6.0f;
-constexpr F32 kLineHeight = 24.0f; // matches the newline step in AppendText
 constexpr U32 kClockLines = 3;
 
 static void AppendPanel(const F32 x, const F32 y, const F32 width, const F32 height) {
@@ -348,19 +358,21 @@ static void AppendClock() {
              pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute, pacific.second,
              universal.year, universal.month, universal.day, universal.hour, universal.minute, universal.second,
              gps, gps / kSecondsPerWeek, gps % kSecondsPerWeek);
-    const F32 width = TextWidth(label) + 2.0f * kPanelPadding;
-    const F32 height = kClockLines * kLineHeight + 2.0f * kPanelPadding;
-    const F32 x = static_cast<F32>(r.extent.width) - kPanelMargin - width;
-    AppendPanel(x, kPanelMargin, width, height);
-    AppendText(label, x + kPanelPadding, kPanelMargin + kPanelPadding);
+    const F32 width = TextWidth(label) + 2.0f * UiPixels(kPanelPadding);
+    const F32 height = kClockLines * UiPixels(kLineHeight) + 2.0f * UiPixels(kPanelPadding);
+    const F32 x = static_cast<F32>(r.extent.width) - UiPixels(kPanelMargin) - width;
+    AppendPanel(x, UiPixels(kPanelMargin), width, height);
+    AppendText(label, x + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
 }
 
 static void DrawOverlay() {
+    // The UI scale changes when the window moves to another monitor.
+    textRenderer.pixelsPerEm = UiPixels(kTextCapHeightPixels) / slugFont.capHeight;
     textRenderer.quadCount = 0;
     char label[11];
     snprintf(label, sizeof(label), "FPS: %u", displayedFps);
-    AppendPanel(kPanelMargin, kPanelMargin, 132.0f, 32.0f);
-    AppendText(label, kPanelMargin + kPanelPadding, kPanelMargin + kPanelPadding);
+    AppendPanel(UiPixels(kPanelMargin), UiPixels(kPanelMargin), UiPixels(kFpsPanelWidth), UiPixels(kFpsPanelHeight));
+    AppendText(label, UiPixels(kPanelMargin) + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
     AppendClock();
     const TextPush push = {
         .viewport = {static_cast<F32>(r.extent.width), static_cast<F32>(r.extent.height)},

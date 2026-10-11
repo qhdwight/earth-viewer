@@ -86,6 +86,10 @@ constexpr F32 kMouseRadiansPerPixel = 0.003f;
 constexpr F32 kMaxPitch = 0.5f * kPi - 0.01f;
 constexpr F32 kSpeedPerAltitude = 1.0f; // altitudes per second
 constexpr F32 kMinAltitude = 1.0e-3f;
+// Scroll wheel zoom: each notch scales the altitude by 1 + kZoomPerNotch, up to
+// kMaxAltitude Earth radii.
+constexpr F32 kZoomPerNotch = 0.2f;
+constexpr F32 kMaxAltitude = 50.0f;
 constexpr F32 kBoost = 4.0f;
 constexpr F32 kMaxFrameSeconds = 0.1f;
 // Simulation speeds, as multiples of real time; [ steps up and ] steps down.
@@ -208,6 +212,8 @@ struct Input {
     bool orbiting;
     I32 orbitDx;
     I32 orbitDy;
+    // Accumulated wheel rotation, in Windows units of WHEEL_DELTA per notch.
+    I32 wheelDelta;
 };
 
 struct Renderer {
@@ -823,6 +829,22 @@ static void UpdateCamera(const F32 dt) {
         input.orbitDy = 0;
     }
 
+    // Scroll wheel: move straight toward or away from the Earth's center,
+    // keeping the view direction. Dividing the altitude on the way in and
+    // multiplying on the way out makes a notch in and a notch out cancel
+    // exactly, and fractional notches from smooth wheels zoom proportionally.
+    if (input.wheelDelta != 0) {
+        const F32 notches = static_cast<F32>(input.wheelDelta) / static_cast<F32>(WHEEL_DELTA);
+        const F32 factor = notches > 0.0f ? 1.0f / (1.0f + kZoomPerNotch * notches) : 1.0f - kZoomPerNotch * notches;
+        const F32 distance = Length(camera.position);
+        // The ceiling only stops zooming out; flying farther with the keys is
+        // still allowed, and zooming in from there must not snap back.
+        const F32 ceiling = Max(kMaxAltitude, distance - 1.0f);
+        const F32 altitude = Clamp((distance - 1.0f) * factor, kMinAltitude, ceiling);
+        camera.position = Scale(camera.position, (1.0f + altitude) / distance);
+        input.wheelDelta = 0;
+    }
+
     if (camera.yaw > kPi) {
         camera.yaw -= kTau;
     } else if (camera.yaw < -kPi) {
@@ -1280,6 +1302,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
                 }
                 input.lastMouse = mouse;
             }
+            return 0;
+        }
+        case WM_MOUSEWHEEL: {
+            // Positive is the wheel rolled away from the user: zoom in.
+            input.wheelDelta += GET_WHEEL_DELTA_WPARAM(wparam);
             return 0;
         }
         case WM_MOUSELEAVE: {

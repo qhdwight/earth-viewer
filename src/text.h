@@ -425,8 +425,8 @@ static void AppendHoverLabel() {
         const OrbitState &state = satelliteStates[hover.index];
         FormatStateLabel(label, sizeof(label), "Satellite", hover.index, state.position, &state.velocity);
     } else if (hover.kind == kHoverStation) {
-        FormatStateLabel(label, sizeof(label), "Ground station", hover.index, groundStations[hover.index].position,
-                         nullptr);
+        FormatStateLabel(label, sizeof(label), "Ground station", hover.index,
+                         Support(groundStations[hover.index].horizon).xyz, nullptr);
     } else {
         snprintf(label, sizeof(label), "Link: ground station #%u to satellite #%u",
                  static_cast<U32>(links[hover.index].station), static_cast<U32>(links[hover.index].satellite));

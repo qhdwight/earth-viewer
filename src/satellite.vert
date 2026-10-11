@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "globe.glsl"
 
 // Each satellite or ground station is a camera-facing square of six
 // vertices, sized to fit a round dot plus its halo. Positions are in world
@@ -13,7 +16,8 @@ layout(buffer_reference, std430) readonly buffer Positions {
 };
 
 layout(push_constant) uniform SatellitePush {
-    mat4 viewProj;
+    Motor view; // world to camera space
+    vec4 projection; // Perspective in math.h
     vec4 cameraPos;
     vec4 sunDirection;
     // x: dot radius in world units, y: world units per UI pixel per unit of
@@ -35,36 +39,31 @@ const float kHaloRadii = 3.0; // must match satellite.frag
 const vec3 kSunlitColor = vec3(0.5, 1.0, 0.85);
 const vec3 kShadowColor = vec3(0.08, 0.2, 0.45);
 const vec3 kStationColor = vec3(1.0);
-// Ground stations sit exactly on the surface, at t = 1 below; the margin
-// keeps them from flickering in and out.
-const float kOcclusionMargin = 0.001;
 
 void main() {
     const vec4 marker = pc.positions.positions[gl_VertexIndex / kVerticesPerSprite];
     const vec3 p = marker.xyz;
     const vec2 corner = kCorners[gl_VertexIndex % kVerticesPerSprite];
 
-    // Hidden when the line of sight from the camera meets the globe first:
-    // solve |o + t d| = 1 for t in (0, 1).
-    const vec3 o = pc.cameraPos.xyz;
-    const vec3 d = p - o;
-    const float a = dot(d, d);
-    const float b = dot(o, d);
-    const float discriminant = b * b - a * (dot(o, o) - 1.0);
-    const float t = (-b - sqrt(max(discriminant, 0.0))) / a;
-    if (discriminant > 0.0 && t > 0.0 && t < 1.0 - kOcclusionMargin) {
+    // Ground stations sit on the surface; the margin in HiddenByGlobe keeps
+    // them from flickering in and out.
+    if (HiddenByGlobe(pc.cameraPos.xyz, p)) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside the clip volume
         return;
     }
 
-    // In Earth's shadow, approximated as a cylinder behind the globe.
-    const float sunward = dot(p, pc.sunDirection.xyz);
-    const bool shadowed = sunward < 0.0 && dot(p, p) - sunward * sunward < 1.0;
+    // In Earth's shadow, approximated as a cylinder behind the globe: on the
+    // night side and within one radius of the line from the Sun through the
+    // globe's centre. That line has unit direction and no moment, so its
+    // distance from p is the length of the cross product.
+    const vec3 sun = pc.sunDirection.xyz;
+    const vec3 offAxis = cross(sun, p);
+    const bool shadowed = dot(p, sun) < 0.0 && dot(offAxis, offAxis) < 1.0;
     color = marker.w > 0.5 ? kStationColor : (shadowed ? kShadowColor : kSunlitColor);
 
     // An offset perpendicular to the view changes clip xy by a fixed amount per
     // world unit at any depth, so the sprite is built directly in clip space.
-    const vec4 clip = pc.viewProj * vec4(p, 1.0);
+    const vec4 clip = Project(pc.projection, Transform(pc.view, p));
     const float worldPerPixel = pc.sprite.y * max(clip.w, 0.0);
     const float radius = max(pc.sprite.x, kMinRadiusPixels * worldPerPixel);
     pixelsPerRadius = radius / max(worldPerPixel, 1.0e-12);

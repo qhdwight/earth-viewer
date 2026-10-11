@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "pga.glsl"
 
 layout(location = 0) out vec3 worldPos;
 // x: distance past the segment start, y: distance past the segment end,
@@ -15,7 +18,8 @@ layout(buffer_reference, std430) readonly buffer VertexBuffer {
 };
 
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
+    Motor view; // world to camera space
+    vec4 projection; // Perspective in math.h
     vec4 cameraPos;
     // x: half width in world units, y: minimum half width per unit of view
     // depth, z: padding for anti-aliasing and glow per unit of view depth.
@@ -55,13 +59,14 @@ void main() {
     const vec3 p1 = SpherePoint(pc.vertexBuffer.points[2 * segment + 1]);
     const vec3 p = mix(p0, p1, end);
 
-    // A ribbon facing the camera: widen perpendicular to both the segment and
-    // the view direction, and extend the ends by the same amount to make room
-    // for round caps, which join adjacent segments smoothly.
+    // A ribbon facing the camera: widen along the normal of the plane through
+    // the segment and the camera, and extend the ends by the same amount to
+    // make room for round caps, which join adjacent segments smoothly.
     const vec3 along = SafeNormalize(p1 - p0);
-    const vec3 across = SafeNormalize(cross(along, pc.cameraPos.xyz - p));
+    const vec3 across = SafeNormalize(Wedge(Wedge(p0, p1), pc.cameraPos.xyz).xyz);
 
-    const vec4 clip = pc.viewProj * vec4(p, 1.0);
+    const vec3 viewPos = Transform(pc.view, p);
+    const vec4 clip = Project(pc.projection, viewPos);
     const float depth = max(clip.w, 0.0);
     const float halfWidth = max(pc.line.x, pc.line.y * depth);
     // The geometry is padded so the fragment shader can fade the true edge
@@ -78,5 +83,5 @@ void main() {
     ribbon = vec3(mix(padded, -lengthInHalfWidths - padded, end),
                   mix(-lengthInHalfWidths - padded, padded, end),
                   side * padded);
-    gl_Position = clip + pc.viewProj * vec4(offset, 0.0);
+    gl_Position = Project(pc.projection, viewPos + TransformDirection(pc.view, offset));
 }

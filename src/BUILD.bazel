@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "objc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test", "objc_library")
 load("//third_party/vulkan:glsl.bzl", "glsl_header")
 
 cc_library(
@@ -12,6 +12,13 @@ cc_library(
     hdrs = ["math.h"],
     visibility = ["//visibility:public"],
     deps = [":core"],
+)
+
+cc_test(
+    name = "math_test",
+    size = "small",
+    srcs = ["math_test.cc"],
+    deps = [":math"],
 )
 
 cc_library(
@@ -61,18 +68,21 @@ cc_library(
 glsl_header(
     name = "earth_vert",
     src = "earth.vert",
+    includes = ["pga.glsl"],
     variable = "kEarthVert",
 )
 
 glsl_header(
     name = "earth_frag",
     src = "earth.frag",
+    includes = ["pga.glsl"],
     variable = "kEarthFrag",
 )
 
 glsl_header(
     name = "sphere_vert",
     src = "sphere.vert",
+    includes = ["pga.glsl"],
     variable = "kSphereVert",
 )
 
@@ -97,18 +107,21 @@ glsl_header(
 glsl_header(
     name = "link_vert",
     src = "link.vert",
+    includes = ["pga.glsl"],
     variable = "kLinkVert",
 )
 
 glsl_header(
     name = "link_frag",
     src = "link.frag",
+    includes = ["globe.glsl", "pga.glsl"],
     variable = "kLinkFrag",
 )
 
 glsl_header(
     name = "satellite_vert",
     src = "satellite.vert",
+    includes = ["globe.glsl", "pga.glsl"],
     variable = "kSatelliteVert",
 )
 

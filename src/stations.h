@@ -18,8 +18,10 @@ inline constexpr F64 kMinElevationSineSquared = kMinElevationSine * kMinElevatio
 inline constexpr U32 kMaxLinks = kStationCount * kSatelliteCount;
 
 struct GroundStation {
-    Vec3d position; // m, ECEF, on the equatorial-radius sphere the renderer draws
-    Vec3d up; // unit vector, the local vertical
+    // The plane tangent to the equatorial-radius sphere the renderer draws, in
+    // ECEF meters, unitized with its normal pointing up. The station is its
+    // support point, the point closest to the Earth's center.
+    Plane3d horizon;
 };
 
 struct Link {
@@ -80,20 +82,30 @@ inline void InitGroundStations(GroundStation *const stations) {
         }
         F32 sinLongitude, cosLongitude;
         SinCos(longitude * kRadiansPerDegree, sinLongitude, cosLongitude);
-        const Vec3d up = {cosLatitude * cosLongitude, cosLatitude * sinLongitude, sinLatitude};
-        stations[count++] = {.position = Scale(up, kEarthRadius), .up = up};
+        // Float trigonometry leaves the normal a few parts in 1e7 off unit
+        // length, meters at the Earth's radius, so unitize it in double.
+        const Vec3d normal = {cosLatitude * cosLongitude, cosLatitude * sinLongitude, sinLatitude};
+        const Vec3d up = Scale(normal, 1.0 / Length(normal));
+        stations[count++] = {.horizon = {.n = up, .w = -kEarthRadius}};
     }
 }
 
 // Every station and satellite pair where the satellite is above the station's
 // minimum elevation. Returns the number of links written.
 inline U32 FindLinks(const GroundStation *const stations, const OrbitState *const satellites, Link *const links) {
+    F64 radiusSquared[kSatelliteCount];
+    for (U32 satellite = 0; satellite < kSatelliteCount; ++satellite) {
+        radiusSquared[satellite] = Dot(satellites[satellite].position, satellites[satellite].position);
+    }
     U32 count = 0;
     for (U32 station = 0; station < kStationCount; ++station) {
+        const Plane3d horizon = stations[station].horizon;
         for (U32 satellite = 0; satellite < kSatelliteCount; ++satellite) {
-            const Vec3d lineOfSight = Sub(satellites[satellite].position, stations[station].position);
-            const F64 height = Dot(lineOfSight, stations[station].up);
-            if (Abs(height) * height >= kMinElevationSineSquared * Dot(lineOfSight, lineOfSight)) {
+            // The satellite's height above the horizon, and its squared distance
+            // from the station at -w n: |s|^2 + 2 w height - w^2.
+            const F64 height = Antiwedge(Point3d{satellites[satellite].position}, horizon);
+            const F64 distanceSquared = radiusSquared[satellite] + horizon.w * (2.0 * height - horizon.w);
+            if (Abs(height) * height >= kMinElevationSineSquared * distanceSquared) {
                 links[count++] = {.station = static_cast<U16>(station), .satellite = static_cast<U16>(satellite)};
             }
         }

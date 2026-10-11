@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "pga.glsl"
 
 // Links between ground stations and satellites, drawn as camera-facing
 // ribbons like the borders in earth.vert, but with 3D endpoints.
@@ -15,7 +18,8 @@ layout(buffer_reference, std430) readonly buffer Segments {
 
 // Same layout as earth.vert; main.cc pushes link widths and this buffer.
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
+    Motor view;
+    vec4 projection;
     vec4 cameraPos;
     // x: half width in world units, y: minimum half width per unit of view
     // depth, z: anti-aliasing padding per unit of view depth.
@@ -43,9 +47,10 @@ void main() {
     const vec3 p = mix(p0, p1, end);
 
     const vec3 along = SafeNormalize(p1 - p0);
-    const vec3 across = SafeNormalize(cross(along, pc.cameraPos.xyz - p));
+    const vec3 across = SafeNormalize(Wedge(Wedge(p0, p1), pc.cameraPos.xyz).xyz);
 
-    const vec4 clip = pc.viewProj * vec4(p, 1.0);
+    const vec3 viewPos = Transform(pc.view, p);
+    const vec4 clip = Project(pc.projection, viewPos);
     const float depth = max(clip.w, 0.0);
     const float halfWidth = max(pc.line.x, pc.line.y * depth);
     const float paddedHalfWidth = halfWidth + pc.line.z * depth;
@@ -57,5 +62,5 @@ void main() {
     ribbon = vec3(mix(padded, -lengthInHalfWidths - padded, end),
                   mix(-lengthInHalfWidths - padded, padded, end),
                   side * padded);
-    gl_Position = clip + pc.viewProj * vec4(offset, 0.0);
+    gl_Position = Project(pc.projection, viewPos + TransformDirection(pc.view, offset));
 }

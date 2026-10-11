@@ -14,7 +14,8 @@ def _glsl_header_impl(ctx):
             "-o",
             out.path,
         ],
-        inputs = [ctx.file.src],
+        # glslang resolves #include relative to the including file.
+        inputs = [ctx.file.src] + ctx.files.includes,
         tools = [ctx.file._glslang],
         outputs = [out],
         mnemonic = "Glslang",
@@ -27,6 +28,7 @@ glsl_header = rule(
     doc = "Compiles a GLSL shader into a header declaring `const uint32_t <variable>[]`.",
     attrs = {
         "src": attr.label(allow_single_file = True, mandatory = True),
+        "includes": attr.label_list(allow_files = [".glsl"], doc = "Files the shader #includes."),
         "variable": attr.string(mandatory = True),
         "_glslang": attr.label(
             default = "@vulkan//:glslang",

@@ -4,9 +4,8 @@ layout(location = 0) in vec3 rayDir;
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
-    vec4 cameraPos;
-    layout(offset = 80) vec4 line; // w: UI scale, physical pixels per UI pixel
+    layout(offset = 48) vec4 cameraPos;
+    vec4 line; // w: UI scale, physical pixels per UI pixel
     vec4 sunDirection;
 } pc;
 
@@ -159,15 +158,16 @@ float NormalCdf(const float x) {
 
 // Amount of haze along the ray o + t d for t >= 0, stopping at the surface
 // when hit is true. Grazing rays cross far more haze than steep ones, which
-// is what makes the outline glow. b is dot(o, d).
-float GlowDepth(const vec3 o, const vec3 d, const float b, const bool hit) {
+// is what makes the outline glow. b is dot(o, d) and moment is the ray's
+// moment o x d, as long as its closest approach to the globe's centre.
+float GlowDepth(const vec3 o, const vec3 d, const float b, const vec3 moment, const bool hit) {
     const float h = kGlowScaleHeight;
     const float r = length(o);
     const float altitude = r - 1.0;
     if (hit) {
         // Slant path from the camera down to the surface through locally
         // flat haze. The 2h/pi term caps it at the curved value when grazing.
-        const float t = -b - sqrt(max(b * b - dot(o, o) + 1.0, 0.0));
+        const float t = -b - sqrt(max(1.0 - dot(moment, moment), 0.0));
         const float mu = dot(normalize(o + d * t), -d);
         return h * (1.0 - exp(-altitude / h)) / sqrt(mu * mu + 2.0 * h / kPi);
     }
@@ -179,7 +179,7 @@ float GlowDepth(const vec3 o, const vec3 d, const float b, const bool hit) {
     // Passing the globe: altitude along the ray is nearly a parabola around
     // the closest approach, so the density along t is a Gaussian. Clamping
     // keeps limb pixels that partly cover the globe finite.
-    const float closest = max(sqrt(max(dot(o, o) - b * b, 0.0)), 1.0);
+    const float closest = max(length(moment), 1.0);
     const float sigma = sqrt(closest * h);
     return exp(-(closest - 1.0) / h) * sqrt(2.0 * kPi) * sigma * NormalCdf(-b / sigma);
 }
@@ -208,8 +208,13 @@ void main() {
     const vec3 dx = dFdx(d);
     const vec3 dy = dFdy(d);
     const float pixelAngle = max(max(length(dx), length(dy)), 0.000001);
+    // The ray as a line: unit direction d, the weight, and moment o x d, the
+    // bulk. By Lagrange's identity the discriminant is the squared weight
+    // less the squared bulk, which avoids subtracting nearly equal b^2 and
+    // o.o far from the globe.
+    const vec3 moment = cross(o, d);
     const float b = dot(o, d);
-    const float discriminant = b * b - (dot(o, o) - 1.0);
+    const float discriminant = 1.0 - dot(moment, moment);
     // Fade the limb over about one pixel instead of cutting it hard.
     const float limbWidth = max(fwidth(discriminant), 0.000001);
     const float alpha = b < 0.0 ? smoothstep(0.0, limbWidth, discriminant) : 0.0;
@@ -232,12 +237,14 @@ void main() {
     }
     // Both glow paths are evaluated so limb pixels blend them smoothly.
     // Each path is lit by the Sun at its densest point: the closest approach
-    // for rays passing the globe, the surface hit for rays striking it.
-    const vec3 skyPoint = o + d * max(-b, 0.0);
-    const vec3 sky = background + Glow(GlowDepth(o, d, b, false)) * Sunlight(skyPoint);
+    // for rays passing the globe, the surface hit for rays striking it. The
+    // closest approach is the line's support point d x m, ahead of the camera
+    // only when b < 0.
+    const vec3 skyPoint = b < 0.0 ? cross(d, moment) : o;
+    const vec3 sky = background + Glow(GlowDepth(o, d, b, moment, false)) * Sunlight(skyPoint);
     const vec3 normal = normalize(globePoint);
     const float daylight = smoothstep(-0.05, 0.3, dot(normal, pc.sunDirection.xyz));
-    const vec3 globe = kSphereColor + kDayColor * daylight + graticule + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
+    const vec3 globe = kSphereColor + kDayColor * daylight + graticule + Glow(GlowDepth(o, d, b, moment, true)) * Sunlight(globePoint);
     // Composite here so the globe occludes stars even with MAX blending.
     outColor = vec4(mix(sky, globe, alpha), 1.0);
 }

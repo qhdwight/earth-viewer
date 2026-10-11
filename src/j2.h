@@ -86,7 +86,7 @@ inline OrbitState PropagateJ2(const OrbitState state, const F64 seconds) {
 // Renderer world space: the unit sphere is the equatorial radius, with +X
 // through 90 degrees east, +Y through the north pole and +Z through the prime
 // meridian.
-inline Vec3 WorldFromEcef(const Vec3d p) {
+inline Point3 WorldFromEcef(const Vec3d p) {
     constexpr F64 kScale = 1.0 / kEarthRadius;
-    return {static_cast<F32>(p.y * kScale), static_cast<F32>(p.z * kScale), static_cast<F32>(p.x * kScale)};
+    return {{static_cast<F32>(p.y * kScale), static_cast<F32>(p.z * kScale), static_cast<F32>(p.x * kScale)}};
 }

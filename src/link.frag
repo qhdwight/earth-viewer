@@ -1,4 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "globe.glsl"
 
 layout(location = 0) in vec3 worldPos;
 // x: distance past the segment start, y: distance past the segment end,
@@ -7,7 +10,7 @@ layout(location = 1) in vec3 ribbon;
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform PushConstants {
-    layout(offset = 64) vec4 cameraPos;
+    layout(offset = 48) vec4 cameraPos;
     vec4 line; // w: UI scale, physical pixels per UI pixel
 } pc;
 
@@ -17,9 +20,6 @@ const vec3 kLinkColor = vec3(0.3, 0.85, 1.0);
 const float kLinkIntensity = 0.6;
 const vec3 kLinkGlowColor = vec3(0.01, 0.1, 0.16);
 const float kLinkGlowPixels = 4.0; // UI pixels; matches kLineGlowPixels in main.cc
-// Points on the surface sit exactly at t = 1 below; the margin keeps a
-// station's end of the link from flickering in and out.
-const float kOcclusionMargin = 0.001;
 
 void main() {
     // Round caps and a one-pixel anti-aliased edge, as in earth.frag.
@@ -32,16 +32,9 @@ void main() {
     const float glowFade = max(1.0 - glowPixels / (kLinkGlowPixels * pc.line.w), 0.0);
     const float glow = glowFade * glowFade;
 
-    // Hidden where the line of sight from the camera meets the globe first:
-    // solve |o + t d| = 1 for t in (0, 1).
-    const vec3 o = pc.cameraPos.xyz;
-    const vec3 d = worldPos - o;
-    const float a = dot(d, d);
-    const float b = dot(o, d);
-    const float discriminant = b * b - a * (dot(o, o) - 1.0);
-    const float t = (-b - sqrt(max(discriminant, 0.0))) / a;
-    const bool occluded = discriminant > 0.0 && t > 0.0 && t < 1.0 - kOcclusionMargin;
-    if (alpha + glow <= 0.0 || occluded) {
+    // A station's end of the link sits on the surface; the margin in
+    // HiddenByGlobe keeps it from flickering in and out.
+    if (alpha + glow <= 0.0 || HiddenByGlobe(pc.cameraPos.xyz, worldPos)) {
         discard;
     }
     // Premultiplied and blended source-over, unlike the MAX-blended scene, so

@@ -142,8 +142,10 @@ static constexpr U32 PackBorderPoint(const I16 (&point)[2]) {
 
 // Matches the push_constant blocks in earth.vert and earth.frag.
 struct PushConstants {
-    Mat4 viewProj;
-    F32 cameraPos[4];
+    // Takes world space to camera space: the inverse of the camera's pose.
+    Motor3 view;
+    Perspective projection;
+    F32 cameraPos[4]; // a unitized point
     // x: half line width in world units.
     // y: minimum half line width in world units per unit of view depth.
     // z: anti-aliasing and glow padding in world units per unit of view depth.
@@ -154,11 +156,12 @@ struct PushConstants {
     VkDeviceAddress vertexBuffer;
 };
 
-static_assert(sizeof(PushConstants) == 120);
-static_assert(offsetof(PushConstants, cameraPos) == 64);
-static_assert(offsetof(PushConstants, line) == 80);
-static_assert(offsetof(PushConstants, sunDirection) == 96);
-static_assert(offsetof(PushConstants, vertexBuffer) == 112);
+static_assert(sizeof(PushConstants) == 104);
+static_assert(offsetof(PushConstants, projection) == 32);
+static_assert(offsetof(PushConstants, cameraPos) == 48);
+static_assert(offsetof(PushConstants, line) == 64);
+static_assert(offsetof(PushConstants, sunDirection) == 80);
+static_assert(offsetof(PushConstants, vertexBuffer) == 96);
 
 // Satellites are dots with a fixed radius on the ground scale, like the border
 // lines, with a minimum size on screen set in satellite.vert.
@@ -174,7 +177,8 @@ constexpr U64 kLinkBufferSize = kMaxLinks * 2 * 4 * sizeof(F32);
 
 // Matches the push_constant block in satellite.vert.
 struct SatellitePush {
-    Mat4 viewProj;
+    Motor3 view;
+    Perspective projection;
     F32 cameraPos[4];
     F32 sunDirection[4];
     // x: dot radius in world units, y: world units per UI pixel per unit of
@@ -183,23 +187,25 @@ struct SatellitePush {
     VkDeviceAddress positions;
 };
 
-static_assert(sizeof(SatellitePush) == 120);
-static_assert(offsetof(SatellitePush, sprite) == 96);
-static_assert(offsetof(SatellitePush, positions) == 112);
+static_assert(sizeof(SatellitePush) == 104);
+static_assert(offsetof(SatellitePush, sprite) == 80);
+static_assert(offsetof(SatellitePush, positions) == 96);
 
 // ---------------------------------------------------------------------------
 
 struct Camera {
-    Vec3 position;
-    F32 yaw; // radians about +Y; 0 looks down -Z at the prime meridian
+    Point3 position;
+    F32 yaw; // radians; positive turns the view from -Z toward +X
     F32 pitch; // radians above the horizontal plane
 };
 
-struct CameraBasis {
-    Vec3 right;
-    Vec3 up;
-    Vec3 forward;
-};
+// Lines through the Earth's center.
+constexpr Line3 kXAxis = {{1.0f, 0.0f, 0.0f}, {}};
+constexpr Line3 kYAxis = {{0.0f, 1.0f, 0.0f}, {}};
+// Camera space directions: the camera looks down -Z with +Y up.
+constexpr Vec3 kCameraRight = {1.0f, 0.0f, 0.0f};
+constexpr Vec3 kCameraUp = {0.0f, 1.0f, 0.0f};
+constexpr Vec3 kCameraForward = {0.0f, 0.0f, -1.0f};
 
 struct Renderer {
     VkInstance instance = VK_NULL_HANDLE;
@@ -250,7 +256,7 @@ struct Renderer {
 };
 
 static Renderer r;
-static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
+static Camera camera = {.position = {{0.0f, 0.0f, 3.0f}}, .yaw = 0.0f, .pitch = 0.0f};
 Input input;
 
 static F64 TimeRate() {
@@ -320,8 +326,8 @@ static Hover hover;
 // Picking distances from the cursor, in UI pixels. Dots win over links.
 constexpr F32 kPickDotPixels = 8.0f;
 constexpr F32 kPickLinkPixels = 5.0f;
-// Points on the surface sit exactly on the globe; as in the shaders, this
-// margin keeps them from counting as hidden behind it.
+// Points on the surface sit exactly on the globe; this margin keeps them from
+// counting as hidden behind it. Matches kOcclusionMargin in globe.glsl.
 constexpr F32 kOcclusionMargin = 0.001f;
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
@@ -624,17 +630,17 @@ static void CreateSatelliteBuffer() {
 }
 
 static void WriteMarker(F32 *const dst, const Vec3d ecef, const F32 kind) {
-    const Vec3 p = WorldFromEcef(ecef);
-    dst[0] = p.x;
-    dst[1] = p.y;
-    dst[2] = p.z;
+    const Point3 p = WorldFromEcef(ecef);
+    dst[0] = p.xyz.x;
+    dst[1] = p.xyz.y;
+    dst[2] = p.xyz.z;
     dst[3] = kind;
 }
 
 // Stations never move in ECEF, so their markers are written once.
 static void WriteStationMarkers() {
     for (U32 i = 0; i < kStationCount; ++i) {
-        WriteMarker(r.satellitePositions + 4 * (kSatelliteCount + i), groundStations[i].position, 1.0f);
+        WriteMarker(r.satellitePositions + 4 * (kSatelliteCount + i), Support(groundStations[i].horizon).xyz, 1.0f);
     }
 }
 
@@ -796,13 +802,15 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
 #include "src/slug.h"
 #include "src/text.h"
 
-static CameraBasis ComputeBasis() {
-    F32 sinYaw, cosYaw, sinPitch, cosPitch;
-    SinCos(camera.yaw, sinYaw, cosYaw);
-    SinCos(camera.pitch, sinPitch, cosPitch);
-    const Vec3 forward = {sinYaw * cosPitch, sinPitch, -cosYaw * cosPitch};
-    const Vec3 right = {cosYaw, 0.0f, sinYaw};
-    return {.right = right, .up = Cross(right, forward), .forward = forward};
+// The camera's orientation: pitch about camera +X, then yaw about world +Y.
+// Positive yaw turns the view toward +X, a negative turn about +Y.
+static Motor3 CameraRotation() {
+    return Compose(Rotation(kYAxis, -camera.yaw), Rotation(kXAxis, camera.pitch));
+}
+
+// The camera's pose, taking camera space to world space.
+static Motor3 CameraPose() {
+    return Compose(Translation(camera.position.xyz), CameraRotation());
 }
 
 // Free-fly camera: drag the mouse to look, WASD to move along the view, Q/E
@@ -820,24 +828,19 @@ static void UpdateCamera(const F32 dt) {
     // cursor. Scaling by altitude over distance keeps the ground moving at a
     // similar speed on screen at any height.
     if (input.orbitDx != 0 || input.orbitDy != 0) {
-        const F32 distance = Length(camera.position);
+        const F32 distance = Length(camera.position.xyz);
         const F32 radiansPerPixel = kMouseRadiansPerPixel / uiScale * (distance - 1.0f) / distance;
         const F32 yawStep = static_cast<F32>(input.orbitDx) * radiansPerPixel;
         const F32 pitchStep = Clamp(camera.pitch - static_cast<F32>(input.orbitDy) * radiansPerPixel, -kMaxPitch,
                                     kMaxPitch) - camera.pitch;
-        // Yaw turns about +Y.
-        F32 sinYaw, cosYaw;
-        SinCos(yawStep, sinYaw, cosYaw);
-        const Vec3 p = camera.position;
-        camera.position = {p.x * cosYaw - p.z * sinYaw, p.y, p.x * sinYaw + p.z * cosYaw};
+        // Yaw turns about the world's +Y axis, then pitch about the camera's
+        // horizontal right axis once yawed, both through the Earth's center.
+        // The new pose is this motor composed with the old one.
+        const Motor3 yawTurn = Rotation(kYAxis, -yawStep);
         camera.yaw += yawStep;
-        // Pitch turns about the camera's horizontal right axis (Rodrigues).
-        const Vec3 right = ComputeBasis().right;
-        F32 sinPitch, cosPitch;
-        SinCos(pitchStep, sinPitch, cosPitch);
-        const Vec3 q = camera.position;
-        camera.position = Add(Add(Scale(q, cosPitch), Scale(Cross(right, q), sinPitch)),
-                              Scale(right, Dot(right, q) * (1.0f - cosPitch)));
+        const Line3 rightAxis = {Transform(CameraRotation(), kCameraRight), {}};
+        const Motor3 orbit = Compose(Rotation(rightAxis, pitchStep), yawTurn);
+        camera.position = Transform(orbit, camera.position);
         camera.pitch += pitchStep;
         input.orbitDx = 0;
         input.orbitDy = 0;
@@ -850,12 +853,12 @@ static void UpdateCamera(const F32 dt) {
     if (input.wheelNotches != 0.0f) {
         const F32 notches = input.wheelNotches;
         const F32 factor = notches > 0.0f ? 1.0f / (1.0f + kZoomPerNotch * notches) : 1.0f - kZoomPerNotch * notches;
-        const F32 distance = Length(camera.position);
+        const F32 distance = Length(camera.position.xyz);
         // The ceiling only stops zooming out; flying farther with the keys is
         // still allowed, and zooming in from there must not snap back.
         const F32 ceiling = Max(kMaxAltitude, distance - 1.0f);
         const F32 altitude = Clamp((distance - 1.0f) * factor, kMinAltitude, ceiling);
-        camera.position = Scale(camera.position, (1.0f + altitude) / distance);
+        camera.position = {Scale(camera.position.xyz, (1.0f + altitude) / distance)};
         input.wheelNotches = 0.0f;
     }
 
@@ -865,41 +868,43 @@ static void UpdateCamera(const F32 dt) {
         camera.yaw += kTau;
     }
 
-    const CameraBasis basis = ComputeBasis();
+    const Motor3 rotation = CameraRotation();
+    const Vec3 forward = Transform(rotation, kCameraForward);
+    const Vec3 right = Transform(rotation, kCameraRight);
+    const Vec3 up = Transform(rotation, kCameraUp);
     Vec3 move{};
     if (input.keyDown['W']) {
-        move = Add(move, basis.forward);
+        move = Add(move, forward);
     }
     if (input.keyDown['S']) {
-        move = Sub(move, basis.forward);
+        move = Sub(move, forward);
     }
     if (input.keyDown['D']) {
-        move = Add(move, basis.right);
+        move = Add(move, right);
     }
     if (input.keyDown['A']) {
-        move = Sub(move, basis.right);
+        move = Sub(move, right);
     }
     if (input.keyDown['E']) {
-        move = Add(move, basis.up);
+        move = Add(move, up);
     }
     if (input.keyDown['Q']) {
-        move = Sub(move, basis.up);
+        move = Sub(move, up);
     }
     if (Dot(move, move) > 0.0f) {
-        const F32 altitude = Max(Length(camera.position) - 1.0f, kMinAltitude);
+        const F32 altitude = Max(Length(camera.position.xyz) - 1.0f, kMinAltitude);
         const F32 boost = input.keyDown[kKeyShift] ? kBoost : 1.0f;
         const F32 speed = kSpeedPerAltitude * altitude * boost;
         camera.position = Add(camera.position, Scale(Normalize(move), speed * dt));
     }
     // Never sink below the surface; the sphere is drawn from outside only.
-    const F32 distance = Length(camera.position);
+    const F32 distance = Length(camera.position.xyz);
     if (distance < 1.0f + kMinAltitude) {
-        camera.position = Scale(camera.position, (1.0f + kMinAltitude) / distance);
+        camera.position = {Scale(camera.position.xyz, (1.0f + kMinAltitude) / distance)};
     }
 }
 
 static PushConstants BuildPushConstants() {
-    const CameraBasis basis = ComputeBasis();
     const F32 height = static_cast<F32>(r.extent.height);
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
@@ -907,10 +912,11 @@ static PushConstants BuildPushConstants() {
     const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * uiScale * unitsPerPixelPerDepth;
     const F32 aaPaddingPerDepth = (kLineAaPaddingPixels + kLineGlowPixels * uiScale) * unitsPerPixelPerDepth;
     const Vec3 sun = SunDirection(frameUtcTicks);
+    const Vec3 eye = camera.position.xyz;
     return {
-        .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),
-                             View(camera.position, basis.right, basis.up, basis.forward)),
-        .cameraPos = {camera.position.x, camera.position.y, camera.position.z, 1.0f},
+        .view = Antireverse(CameraPose()),
+        .projection = {.scaleX = kFovScale / aspect, .scaleY = -kFovScale, .nearPlane = kNearPlane, .unused = 0.0f},
+        .cameraPos = {eye.x, eye.y, eye.z, 1.0f},
         .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, uiScale},
         .sunDirection = {sun.x, sun.y, sun.z, 0.0f},
         .vertexBuffer = r.vertexAddress,
@@ -921,7 +927,8 @@ static SatellitePush BuildSatellitePush(const PushConstants &scene) {
     const F32 height = static_cast<F32>(r.extent.height);
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     return {
-        .viewProj = scene.viewProj,
+        .view = scene.view,
+        .projection = scene.projection,
         .cameraPos = {scene.cameraPos[0], scene.cameraPos[1], scene.cameraPos[2], scene.cameraPos[3]},
         .sunDirection = {scene.sunDirection[0], scene.sunDirection[1], scene.sunDirection[2], scene.sunDirection[3]},
         .sprite = {kSatelliteRadiusWorld, uiScale * 2.0f / (height * kFovScale), kFovScale / aspect, kFovScale},
@@ -929,23 +936,25 @@ static SatellitePush BuildSatellitePush(const PushConstants &scene) {
     };
 }
 
-// The shaders' visibility test: p is hidden when the line of sight from the
-// camera meets the globe first, solving |eye + t (p - eye)| = 1 for t in (0, 1).
-static bool HiddenByGlobe(const Vec3 eye, const Vec3 p) {
-    const Vec3 d = Sub(p, eye);
-    const F32 a = Dot(d, d);
-    const F32 b = Dot(eye, d);
-    const F32 discriminant = b * b - a * (Dot(eye, eye) - 1.0f);
+// HiddenByGlobe in globe.glsl: p is hidden when the line of sight, the join
+// of eye and p, meets the globe first at eye + t (p - eye) for t in (0, 1).
+// By Lagrange's identity the quadratic's discriminant is the squared weight
+// of the line less its squared bulk, so a line misses the unit sphere when
+// its moment is at least as long as its direction.
+static bool HiddenByGlobe(const Point3 eye, const Point3 p) {
+    const Line3 sight = Wedge(eye, p);
+    const F32 a = Dot(sight.v, sight.v);
+    const F32 discriminant = a - Dot(sight.m, sight.m);
     if (discriminant <= 0.0f) {
         return false;
     }
-    const F32 t = (-b - Sqrt(discriminant)) / a;
+    const F32 t = (-Dot(eye.xyz, sight.v) - Sqrt(discriminant)) / a;
     return t > 0.0f && t < 1.0f - kOcclusionMargin;
 }
 
 // Window pixel coordinates of a world point; w <= 0 means behind the camera.
-static Vec4 ProjectToWindow(const Mat4 &viewProj, const Vec3 p) {
-    const Vec4 clip = TransformPoint(viewProj, p);
+static Vec4 ProjectToWindow(const PushConstants &scene, const Point3 p) {
+    const Vec4 clip = Project(scene.projection, Transform(scene.view, p));
     const F32 inverseW = clip.w > 0.0f ? 1.0f / clip.w : 0.0f;
     return {
         (clip.x * inverseW + 1.0f) * 0.5f * static_cast<F32>(r.extent.width),
@@ -957,12 +966,12 @@ static Vec4 ProjectToWindow(const Mat4 &viewProj, const Vec3 p) {
 
 // Finds the visible satellite or station nearest the cursor, or failing that
 // the nearest visible link, using the frame's own projection.
-static void PickHover(const Mat4 &viewProj) {
+static void PickHover(const PushConstants &scene) {
     hover = {.kind = kHoverNone, .index = 0};
     if (!input.mouseInside || input.hideSatellites) {
         return;
     }
-    const Vec3 eye = camera.position;
+    const Point3 eye = camera.position;
     const F32 mouseX = static_cast<F32>(input.mouseX) + 0.5f;
     const F32 mouseY = static_cast<F32>(input.mouseY) + 0.5f;
 
@@ -970,10 +979,10 @@ static void PickHover(const Mat4 &viewProj) {
     F32 best = dotRadius * dotRadius;
     for (U32 i = 0; i < kMarkerCount; ++i) {
         const bool satellite = i < kSatelliteCount;
-        const Vec3 p = WorldFromEcef(satellite
-                                         ? satelliteStates[i].position
-                                         : groundStations[i - kSatelliteCount].position);
-        const Vec4 screen = ProjectToWindow(viewProj, p);
+        const Point3 p = WorldFromEcef(satellite
+                                           ? satelliteStates[i].position
+                                           : Support(groundStations[i - kSatelliteCount].horizon).xyz);
+        const Vec4 screen = ProjectToWindow(scene, p);
         if (screen.w <= 0.0f || HiddenByGlobe(eye, p)) {
             continue;
         }
@@ -994,10 +1003,10 @@ static void PickHover(const Mat4 &viewProj) {
     const F32 linkRadius = kPickLinkPixels * uiScale;
     best = linkRadius * linkRadius;
     for (U32 i = 0; i < linkCount; ++i) {
-        const Vec3 p0 = WorldFromEcef(groundStations[links[i].station].position);
-        const Vec3 p1 = WorldFromEcef(satelliteStates[links[i].satellite].position);
-        const Vec4 s0 = ProjectToWindow(viewProj, p0);
-        const Vec4 s1 = ProjectToWindow(viewProj, p1);
+        const Point3 p0 = WorldFromEcef(Support(groundStations[links[i].station].horizon).xyz);
+        const Point3 p1 = WorldFromEcef(satelliteStates[links[i].satellite].position);
+        const Vec4 s0 = ProjectToWindow(scene, p0);
+        const Vec4 s1 = ProjectToWindow(scene, p1);
         if (s0.w <= 0.0f || s1.w <= 0.0f) {
             continue;
         }
@@ -1011,10 +1020,13 @@ static void PickHover(const Mat4 &viewProj) {
         if (dx * dx + dy * dy >= best) {
             continue;
         }
-        // The matching point along the 3D segment: screen space and world space
-        // are related by perspective, so the parameter needs correcting.
-        const F32 u = t * s0.w / (t * s0.w + (1.0f - t) * s1.w);
-        if (HiddenByGlobe(eye, Add(p0, Scale(Sub(p1, p0), u)))) {
+        // The matching point along the 3D segment. Screen space is linear in
+        // each endpoint weighted by one over its depth, so blend the weighted
+        // points and unitize.
+        const F32 w0 = (1.0f - t) / s0.w;
+        const F32 w1 = t / s1.w;
+        const Point3 q = {Scale(Add(Scale(p0.xyz, w0), Scale(p1.xyz, w1)), 1.0f / (w0 + w1))};
+        if (HiddenByGlobe(eye, q)) {
             continue;
         }
         best = dx * dx + dy * dy;
@@ -1030,7 +1042,7 @@ static bool DrawFrame() {
         WriteMarker(r.satellitePositions + 4 * i, satelliteStates[i].position, 0.0f);
     }
     for (U32 i = 0; i < linkCount; ++i) {
-        WriteMarker(r.linkPoints + 8 * i, groundStations[links[i].station].position, 0.0f);
+        WriteMarker(r.linkPoints + 8 * i, Support(groundStations[links[i].station].horizon).xyz, 0.0f);
         WriteMarker(r.linkPoints + 8 * i + 4, satelliteStates[links[i].satellite].position, 0.0f);
     }
 
@@ -1090,7 +1102,7 @@ static bool DrawFrame() {
     vkCmdBeginRendering(r.cmd, &rendering);
 
     const PushConstants push = BuildPushConstants();
-    PickHover(push.viewProj);
+    PickHover(push);
     vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(push), &push);
     const VkViewport viewport = {

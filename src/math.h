@@ -20,11 +20,6 @@ struct Vec3d {
     F64 x, y, z;
 };
 
-// Column-major, matching the GLSL default for a push constant mat4.
-struct Mat4 {
-    F32 m[16];
-};
-
 constexpr Vec3 Add(const Vec3 a, const Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 constexpr Vec3 Sub(const Vec3 a, const Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 constexpr Vec3 Scale(const Vec3 a, const F32 s) { return {a.x * s, a.y * s, a.z * s}; }
@@ -116,51 +111,117 @@ inline void SinCos(const F32 x, F32 &sine, F32 &cosine) {
     cosine = sign * (odd ? -s : c);
 }
 
-// Vulkan clip space: y points down, depth spans [0, 1]. Far plane at infinity.
-// fovScale is 1 / tan(verticalFov / 2).
-constexpr Mat4 Perspective(const F32 fovScale, const F32 aspect, const F32 nearPlane) {
+// ---------------------------------------------------------------------------
+// Rigid geometric algebra, following Eric Lengyel's conventions at
+// rigidgeometricalgebra.org. The algebra is G(3,0,1): basis vectors e1, e2, e3
+// and the projective e4, which squares to zero. An element's bulk is its part
+// without e4 and its weight the part with e4; it is unitized when its weight
+// has unit length. Only the products this program needs are written out, each
+// specialized to its operand types. pga.glsl mirrors these for the shaders.
+
+// x e1 + y e2 + z e3 + e4: a unitized point. A Vec3 is a direction, with no e4.
+struct Point3 {
+    Vec3 xyz;
+};
+
+struct Point3d {
+    Vec3d xyz;
+};
+
+// v.x e41 + v.y e42 + v.z e43 + m.x e23 + m.y e31 + m.z e12. The direction v is
+// the weight and the moment m the bulk; m is v crossed into any point on it.
+struct Line3 {
+    Vec3 v;
+    Vec3 m;
+};
+
+// n.x e423 + n.y e431 + n.z e412 + w e321: the points p where n . p + w = 0.
+// The normal n is the weight and w the bulk.
+struct Plane3d {
+    Vec3d n;
+    F64 w;
+};
+
+// A rigid motion: v.x e41 + v.y e42 + v.z e43 + vw 1234 + m.x e23 + m.y e31 +
+// m.z e12 + mw. The weight (v, vw) holds the rotation and the bulk (m, mw) the
+// translation. Laid out as two vec4 for the shaders.
+struct Motor3 {
+    Vec3 v;
+    F32 vw;
+    Vec3 m;
+    F32 mw;
+};
+
+// The difference of two points is a direction, and a point moved along a
+// direction is a point. The sum of two points is not a point.
+constexpr Vec3 Sub(const Point3 a, const Point3 b) { return Sub(a.xyz, b.xyz); }
+constexpr Point3 Add(const Point3 p, const Vec3 d) { return {Add(p.xyz, d)}; }
+
+// The join p ^ q of two unitized points: the line through p toward q.
+constexpr Line3 Wedge(const Point3 p, const Point3 q) { return {Sub(q, p), Cross(p.xyz, q.xyz)}; }
+
+// The meet p v g of a unitized point and a plane: the point's signed distance
+// above the plane, in units of the normal's length.
+constexpr F64 Antiwedge(const Point3d p, const Plane3d g) { return Dot(g.n, p.xyz) + g.w; }
+
+// The point on a plane closest to the origin.
+constexpr Point3d Support(const Plane3d g) { return {Scale(g.n, -g.w / Dot(g.n, g.n))}; }
+
+// Moves points by t. The bulk holds half the displacement.
+constexpr Motor3 Translation(const Vec3 t) { return {{}, 1.0f, Scale(t, 0.5f), 0.0f}; }
+
+// Turns points by angle radians about a unitized line, by the right-hand rule
+// about its direction. The weight and bulk hold half the angle.
+inline Motor3 Rotation(const Line3 axis, const F32 angle) {
+    F32 sine, cosine;
+    SinCos(0.5f * angle, sine, cosine);
+    return {Scale(axis.v, sine), cosine, Scale(axis.m, sine), 0.0f};
+}
+
+// The geometric antiproduct a v b: motion b followed by motion a.
+constexpr Motor3 Compose(const Motor3 a, const Motor3 b) {
     return {
-        {
-            fovScale / aspect, 0.0f, 0.0f, 0.0f,
-            0.0f, -fovScale, 0.0f, 0.0f,
-            0.0f, 0.0f, -1.0f, -1.0f,
-            0.0f, 0.0f, -nearPlane, 0.0f,
-        }
+        .v = Add(Add(Scale(b.v, a.vw), Scale(a.v, b.vw)), Cross(a.v, b.v)),
+        .vw = a.vw * b.vw - Dot(a.v, b.v),
+        .m = Add(Add(Add(Scale(b.m, a.vw), Scale(a.m, b.vw)), Add(Scale(b.v, a.mw), Scale(a.v, b.mw))),
+                 Add(Cross(a.v, b.m), Cross(a.m, b.v))),
+        .mw = a.vw * b.mw + a.mw * b.vw - Dot(a.v, b.m) - Dot(a.m, b.v),
     };
 }
 
-// View matrix from an orthonormal camera basis; the camera looks down -Z.
-constexpr Mat4 View(const Vec3 position, const Vec3 right, const Vec3 up, const Vec3 forward) {
-    return {
-        {
-            right.x, up.x, -forward.x, 0.0f,
-            right.y, up.y, -forward.y, 0.0f,
-            right.z, up.z, -forward.z, 0.0f,
-            -Dot(right, position), -Dot(up, position), Dot(forward, position), 1.0f,
-        }
-    };
+// The antireverse, which negates the bivector parts. For a unitized motor it
+// is the inverse motion.
+constexpr Motor3 Antireverse(const Motor3 q) { return {Scale(q.v, -1.0f), q.vw, Scale(q.m, -1.0f), q.mw}; }
+
+// The sandwich q v p v ~q, expanded for a unitized point and a direction.
+// Directions lack e4, so translation leaves them alone.
+constexpr Point3 Transform(const Motor3 q, const Point3 p) {
+    const Vec3 a = Add(Cross(q.v, p.xyz), q.m);
+    return {Add(p.xyz, Scale(Sub(Add(Scale(a, q.vw), Cross(q.v, a)), Scale(q.v, q.mw)), 2.0f))};
 }
 
-// m * (p, 1), with m column-major.
-constexpr Vec4 TransformPoint(const Mat4 &m, const Vec3 p) {
-    return {
-        m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12],
-        m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13],
-        m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14],
-        m.m[3] * p.x + m.m[7] * p.y + m.m[11] * p.z + m.m[15],
-    };
+constexpr Vec3 Transform(const Motor3 q, const Vec3 d) {
+    const Vec3 a = Cross(q.v, d);
+    return Add(d, Scale(Add(Scale(a, q.vw), Cross(q.v, a)), 2.0f));
 }
 
-constexpr Mat4 Multiply(const Mat4 &a, const Mat4 &b) {
-    Mat4 out = {};
-    for (U32 col = 0; col < 4; ++col) {
-        for (U32 row = 0; row < 4; ++row) {
-            F32 sum = 0.0f;
-            for (U32 k = 0; k < 4; ++k) {
-                sum += a.m[k * 4 + row] * b.m[col * 4 + k];
-            }
-            out.m[col * 4 + row] = sum;
-        }
-    }
-    return out;
+// ---------------------------------------------------------------------------
+// Perspective projection into Vulkan clip space, from camera space looking
+// down -Z: y points down, depth spans [0, 1] and the far plane is at infinity.
+// Projection is not a rigid motion, so it stays outside the algebra. Matches
+// Project in pga.glsl.
+struct Perspective {
+    F32 scaleX; // fovScale / aspect, where fovScale is 1 / tan(verticalFov / 2)
+    F32 scaleY; // -fovScale
+    F32 nearPlane;
+    F32 unused;
+};
+
+constexpr Vec4 Project(const Perspective &projection, const Point3 p) {
+    return {
+        projection.scaleX * p.xyz.x,
+        projection.scaleY * p.xyz.y,
+        -p.xyz.z - projection.nearPlane,
+        -p.xyz.z,
+    };
 }

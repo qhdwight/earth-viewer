@@ -1,4 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "pga.glsl"
 
 layout(location = 0) in vec3 worldPos;
 // x: distance past the segment start, y: distance past the segment end,
@@ -7,7 +10,7 @@ layout(location = 1) in vec3 ribbon;
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform PushConstants {
-    layout(offset = 64) vec4 cameraPos;
+    layout(offset = 48) vec4 cameraPos;
     vec4 line; // w: UI scale, physical pixels per UI pixel
 } pc;
 
@@ -32,8 +35,10 @@ void main() {
     const float glowPixels = max(distance - 1.0, 0.0) * 0.5 / aa;
     const float glowFade = max(1.0 - glowPixels / (kLineGlowPixels * pc.line.w), 0.0);
     const float glow = glowFade * glowFade;
-    // The globe is opaque: only the camera-facing side is visible.
-    if (alpha + glow <= 0.0 || dot(worldPos, pc.cameraPos.xyz - worldPos) < 0.0) {
+    // The globe is opaque: only the camera-facing side is visible, where the
+    // camera is above the plane tangent to the globe at this point.
+    const vec4 tangent = vec4(worldPos, -dot(worldPos, worldPos));
+    if (alpha + glow <= 0.0 || Antiwedge(pc.cameraPos.xyz, tangent) < 0.0) {
         discard;
     }
     // MAX blending uses RGB directly, so coverage must be premultiplied.

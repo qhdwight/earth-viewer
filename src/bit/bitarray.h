@@ -1279,7 +1279,7 @@ public:
     class Iterator
     {
     public:
-        Iterator(T block) : m_block(block), m_iBit(FirstSetBitIndex_U64(block))
+        Iterator(T block) : m_iBit(FirstSetBitIndex_U64(block)), m_block(block)
         {
         }
 

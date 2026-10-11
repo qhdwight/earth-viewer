@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "objc_library")
 load("//third_party/vulkan:glsl.bzl", "glsl_header")
 
 cc_library(
@@ -22,6 +22,40 @@ cc_library(
         ":core",
         ":math",
     ],
+)
+
+cc_library(
+    name = "platform",
+    hdrs = ["platform.h"],
+    deps = [
+        ":core",
+        "@vulkan",
+    ],
+)
+
+objc_library(
+    name = "platform_macos",
+    srcs = [
+        "clock.h",
+        "icon.h",
+        "platform_macos.mm",
+    ],
+    copts = [
+        "-std=c++20",
+        "-fobjc-arc",
+    ],
+    sdk_frameworks = [
+        "AppKit",
+        "QuartzCore",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":platform"],
+)
+
+cc_library(
+    name = "platform_win32",
+    hdrs = ["platform_win32.h"],
+    visibility = ["//visibility:public"],
 )
 
 glsl_header(
@@ -92,23 +126,21 @@ cc_binary(
         "geodetic.h",
         "icon.h",
         "main.cc",
-        "platform_macos.h",
-        "platform_win32.h",
         "satellites.h",
         "slug.h",
         "stations.h",
         "sun.h",
         "text.h",
-        ":text_vert",
-        ":text_frag",
         ":earth_frag",
         ":earth_vert",
-        ":sphere_frag",
-        ":sphere_vert",
-        ":satellite_frag",
-        ":satellite_vert",
         ":link_frag",
         ":link_vert",
+        ":satellite_frag",
+        ":satellite_vert",
+        ":sphere_frag",
+        ":sphere_vert",
+        ":text_frag",
+        ":text_vert",
     ],
     linkopts = select({
         "@platforms//os:windows": [
@@ -116,12 +148,9 @@ cc_binary(
             "/DEFAULTLIB:gdi32.lib",
         ],
         "@platforms//os:macos": [
-            "-framework AppKit",
             "-framework CoreFoundation",
             "-framework CoreGraphics",
             "-framework CoreText",
-            "-framework QuartzCore",
-            "-lobjc",
         ],
         "//conditions:default": [],
     }),
@@ -129,7 +158,12 @@ cc_binary(
         ":core",
         ":j2",
         ":math",
+        ":platform",
         "//src/bit",
         "@vulkan",
-    ],
+    ] + select({
+        "@platforms//os:macos": [":platform_macos"],
+        "@platforms//os:windows": [":platform_win32"],
+        "//conditions:default": [],
+    }),
 )

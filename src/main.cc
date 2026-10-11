@@ -11,17 +11,13 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined(__APPLE__)
 #include <CoreText/CoreText.h>
-#include <mach/mach_time.h>
-#include <objc/message.h>
-#include <objc/runtime.h>
-#include <sys/time.h>
 #include <unistd.h>
-#define VK_USE_PLATFORM_METAL_EXT
 #endif
 
 #include <vulkan/vulkan.h>
 
 #include "src/core.h"
+#include "src/platform.h"
 #include "src/bit/bitarray.h"
 #include "src/borders.h"
 #include "src/earth_frag.h"
@@ -43,7 +39,7 @@
 
 #include <cstdio>
 
-[[noreturn]] static void Die(char const *what, const I64 code) {
+[[noreturn]] void Die(char const *what, const I64 code) {
     printf("%s failed (%lld)\n", what, code);
     fflush(stdout);
 #if defined(_WIN32)
@@ -66,17 +62,11 @@ constexpr U32 kMaxImages = 16;
 constexpr U32 kMaxFormats = 32;
 constexpr U32 kMaxDevices = 16;
 constexpr U32 kMaxQueueFamilies = 16;
-constexpr U32 kMaxKeys = 256;
-// Input::keyDown holds upper-case ASCII letters and this, the Windows VK_SHIFT.
-constexpr U32 kKeyShift = 0x10;
 // Every Vulkan device supports 4x colour multisampling, so no query needed.
 constexpr VkSampleCountFlagBits kSampleCount = VK_SAMPLE_COUNT_4_BIT;
 
 constexpr U32 kInstanceCount = 1;
 constexpr U32 kFullScreenVertexCount = 3; // sphere.vert covers the screen with one triangle
-
-constexpr U32 kWindowWidth = 1280;
-constexpr U32 kWindowHeight = 720;
 
 constexpr F32 kQueuePriority = 1.0f;
 // Border lines have a fixed width on the ground, in Earth radii, so they
@@ -207,31 +197,6 @@ struct CameraBasis {
     Vec3 forward;
 };
 
-struct Input {
-    bool keyDown[kMaxKeys];
-    bool dragging;
-    I32 lastMouseX;
-    I32 lastMouseY;
-    I32 mouseDx;
-    I32 mouseDy;
-    // Toggled with H. Hidden satellites keep propagating, so they reappear in
-    // their real-time positions.
-    bool hideSatellites;
-    // Cursor position in client pixels, meaningful while mouseInside.
-    I32 mouseX;
-    I32 mouseY;
-    bool mouseInside;
-    // Steps through kTimeRates relative to real time, so zero is 1x.
-    I32 timeRateStep;
-    // Middle-button drag, which orbits the camera around the Earth's center.
-    bool orbiting;
-    I32 orbitDx;
-    I32 orbitDy;
-    // Accumulated wheel rotation in notches; smooth wheels and trackpads give
-    // fractions.
-    F32 wheelNotches;
-};
-
 struct Renderer {
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -282,14 +247,13 @@ struct Renderer {
 
 static Renderer r;
 static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
-static Input input;
+Input input;
 
 static F64 TimeRate() {
     return kTimeRates[kRealTimeRate + input.timeRateStep];
 }
 
-// ] steps the simulation rate up and [ steps it down.
-static void StepTimeRate(const U32 character) {
+void StepTimeRate(const U32 character) {
     const I32 slowest = -kRealTimeRate;
     const I32 fastest = static_cast<I32>(Count(kTimeRates)) - 1 - kRealTimeRate;
     if (character == ']') {
@@ -300,9 +264,7 @@ static void StepTimeRate(const U32 character) {
     }
 }
 
-// The cursor moved to (x, y) in window pixels. While a button is held the
-// movement turns into look or orbit deltas.
-static void MoveMouse(const I32 x, const I32 y) {
+void MoveMouse(const I32 x, const I32 y) {
     input.mouseX = x;
     input.mouseY = y;
     if (input.dragging || input.orbiting) {
@@ -323,14 +285,11 @@ static void MoveMouse(const I32 x, const I32 y) {
 
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
-// Physical pixels per UI pixel, a pixel at 100% Windows display scaling or a
-// macOS point. The app renders at full resolution, so sizes meant for the
-// screen, like text, minimum line widths and dots, are given in UI pixels and
-// multiplied by this. Updated when the window changes monitors.
-static F32 uiScale = 1.0f;
-// Set by the platform layer when the swapchain no longer matches the window
-// and presenting would not report it.
-static bool resizePending = false;
+// The app renders at full resolution, so sizes meant for the screen, like
+// text, minimum line widths and dots, are given in UI pixels and multiplied by
+// uiScale. Updated when the window changes monitors.
+F32 uiScale = 1.0f;
+bool resizePending = false;
 // Simulated UTC as Windows FILETIME ticks, advanced once per frame at the
 // selected time rate. The Sun, the satellites and the clock all follow it.
 static U64 frameUtcTicks = 0;
@@ -485,8 +444,6 @@ static void CreateSwapchain() {
 
 #if defined(_WIN32)
 #include "src/platform_win32.h"
-#elif defined(__APPLE__)
-#include "src/platform_macos.h"
 #endif
 
 static void InitVulkan() {
@@ -496,7 +453,7 @@ static void InitVulkan() {
         .apiVersion = VK_API_VERSION_1_4,
     };
 
-    constexpr char const *kInstanceExtensions[] = {
+    char const *const kInstanceExtensions[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         kSurfaceExtensionName,
     };
@@ -508,7 +465,7 @@ static void InitVulkan() {
     };
     VK_CHECK(vkCreateInstance(&instanceInfo, nullptr, &r.instance));
 
-    CreateSurface();
+    r.surface = CreateSurface(r.instance);
 
     // Pick the first physical device that speaks Vulkan 1.4 and can both draw
     // and present on one queue family.

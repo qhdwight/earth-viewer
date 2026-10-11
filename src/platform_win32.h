@@ -1,9 +1,8 @@
 #pragma once
 
-// Included by main.cc after its globals. The window, input, clocks and
-// Vulkan surface for Windows; platform_macos.h provides the same functions.
+// The platform layer for Windows (see platform.h), compiled as part of main.cc.
 
-constexpr char const *kSurfaceExtensionName = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+char const *const kSurfaceExtensionName = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
 constexpr wchar_t const *kClassName = L"earth-viewer";
 constexpr wchar_t const *kWindowTitle = L"Earth Viewer";
 constexpr int kIdcArrow = 32512; // IDC_ARROW
@@ -147,7 +146,7 @@ static LRESULT CALLBACK WndProc(HWND window, const UINT msg, const WPARAM wparam
     }
 }
 
-static void CreateAppWindow() {
+void CreateAppWindow() {
     HINSTANCE hinstance = GetModuleHandleW(nullptr);
     const WNDCLASSW wc = {
         .lpfnWndProc = WndProc,
@@ -174,17 +173,18 @@ static void CreateAppWindow() {
     ShowWindow(hwnd, SW_SHOW);
 }
 
-static void CreateSurface() {
+VkSurfaceKHR CreateSurface(const VkInstance instance) {
     const VkWin32SurfaceCreateInfoKHR surfaceInfo = {
         .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
         .hinstance = GetModuleHandleW(nullptr),
         .hwnd = hwnd,
     };
-    VK_CHECK(vkCreateWin32SurfaceKHR(r.instance, &surfaceInfo, nullptr, &r.surface));
+    VkSurfaceKHR surface;
+    VK_CHECK(vkCreateWin32SurfaceKHR(instance, &surfaceInfo, nullptr, &surface));
+    return surface;
 }
 
-// Handles every queued message. Returns false once the window is closed.
-static bool PumpEvents() {
+bool PumpEvents() {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
@@ -196,30 +196,29 @@ static bool PumpEvents() {
     return true;
 }
 
-// False while minimized, when there is nothing to draw into.
-static bool WindowVisible() {
+bool WindowVisible() {
     RECT rect;
     GetClientRect(hwnd, &rect);
     return rect.right > rect.left && rect.bottom > rect.top;
 }
 
-static void WaitForEvents() {
+void WaitForEvents() {
     WaitMessage();
 }
 
-static U64 Counter() {
+U64 Counter() {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return static_cast<U64>(now.QuadPart);
 }
 
-static U64 CounterFrequency() {
+U64 CounterFrequency() {
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
     return static_cast<U64>(frequency.QuadPart);
 }
 
-static U64 UtcFileTimeTicks() {
+U64 UtcFileTimeTicks() {
     FILETIME now;
     GetSystemTimeAsFileTime(&now);
     return (static_cast<U64>(now.dwHighDateTime) << 32) | now.dwLowDateTime;

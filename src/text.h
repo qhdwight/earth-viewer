@@ -337,7 +337,7 @@ static F32 TextWidth(const char *string) {
     return Max(widest, width);
 }
 
-constexpr U32 kClockLines = 3;
+constexpr U32 kClockLines = 4;
 
 static void AppendPanel(const F32 x, const F32 y, const F32 width, const F32 height) {
     constexpr F32 kPanelColor[4] = {0.0f, 0.0f, 0.0f, 0.9f};
@@ -350,15 +350,23 @@ static void AppendClock() {
     const CivilTime pacific = CivilFromUnixSeconds(utc + (daylight ? kPacificDaylightOffset : kPacificStandardOffset));
     const CivilTime universal = CivilFromUnixSeconds(utc);
     const I64 gps = GpsSecondsFromUnix(utc);
-    char label[128];
+    // The simulation rate, set with [ and ].
+    char rate[16];
+    if (TimeRate() == 0.0) {
+        snprintf(rate, sizeof(rate), "paused");
+    } else {
+        snprintf(rate, sizeof(rate), "%gx", TimeRate());
+    }
+    char label[160];
     snprintf(label, sizeof(label),
              "%s  %04d-%02u-%02u %02u:%02u:%02u\n"
              "UTC  %04d-%02u-%02u %02u:%02u:%02u\n"
-             "GPS  %lld (week %lld, %lld s)",
+             "GPS  %lld (week %lld, %lld s)\n"
+             "RATE %s",
              daylight ? "PDT" : "PST",
              pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute, pacific.second,
              universal.year, universal.month, universal.day, universal.hour, universal.minute, universal.second,
-             gps, gps / kSecondsPerWeek, gps % kSecondsPerWeek);
+             gps, gps / kSecondsPerWeek, gps % kSecondsPerWeek, rate);
     const F32 width = TextWidth(label) + 2.0f * UiPixels(kPanelPadding);
     const F32 height = kClockLines * UiPixels(kLineHeight) + 2.0f * UiPixels(kPanelPadding);
     const F32 x = static_cast<F32>(r.extent.width) - UiPixels(kPanelMargin) - width;

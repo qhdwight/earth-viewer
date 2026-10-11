@@ -86,6 +86,9 @@ constexpr F32 kSpeedPerAltitude = 1.0f; // altitudes per second
 constexpr F32 kMinAltitude = 1.0e-3f;
 constexpr F32 kBoost = 4.0f;
 constexpr F32 kMaxFrameSeconds = 0.1f;
+// Simulation speeds, as multiples of real time; [ steps up and ] steps down.
+constexpr F64 kTimeRates[] = {0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0};
+constexpr I32 kRealTimeRate = 4; // index of 1x
 
 constexpr VkImageSubresourceRange kColorSubresource = {
     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -195,6 +198,12 @@ struct Input {
     // Cursor position in client pixels, meaningful while mouseInside.
     POINT mouse;
     bool mouseInside;
+    // Steps through kTimeRates relative to real time, so zero is 1x.
+    I32 timeRateStep;
+    // Middle-button drag, which orbits the camera around the Earth's center.
+    bool orbiting;
+    I32 orbitDx;
+    I32 orbitDy;
 };
 
 struct Renderer {
@@ -249,6 +258,10 @@ static Renderer r;
 static Camera camera = {.position = {0.0f, 0.0f, 3.0f}, .yaw = 0.0f, .pitch = 0.0f};
 static Input input;
 
+static F64 TimeRate() {
+    return kTimeRates[kRealTimeRate + input.timeRateStep];
+}
+
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
 // Physical pixels per UI pixel, a pixel at 100% Windows display scaling. The
@@ -257,10 +270,10 @@ static U32 displayedFps = 0;
 // pixels and multiplied by this. Updated when the window changes monitors.
 static F32 uiScale = 1.0f;
 constexpr U32 kDefaultDpi = 96;
-// UTC as Windows FILETIME ticks, sampled once per frame so the Sun and the
-// clock overlay agree.
+// Simulated UTC as Windows FILETIME ticks, advanced once per frame at the
+// selected time rate. The Sun, the satellites and the clock all follow it.
 static U64 frameUtcTicks = 0;
-// ECEF orbit states, advanced by real elapsed time every frame.
+// ECEF orbit states, advanced by simulated time every frame.
 static OrbitState satelliteStates[kSatelliteCount];
 static GroundStation groundStations[kStationCount];
 static Link links[kMaxLinks];
@@ -772,13 +785,43 @@ static void UpdateCamera(const F32 dt) {
     camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel / uiScale;
     camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel / uiScale;
     camera.pitch = Clamp(camera.pitch, -kMaxPitch, kMaxPitch);
+    input.mouseDx = 0;
+    input.mouseDy = 0;
+
+    // Middle-button orbit: turn the view exactly as a look drag would, and swing
+    // the camera's position around the Earth's center by the same rotation. The
+    // camera keeps its view of the globe while the globe turns under the
+    // cursor. Scaling by altitude over distance keeps the ground moving at a
+    // similar speed on screen at any height.
+    if (input.orbitDx != 0 || input.orbitDy != 0) {
+        const F32 distance = Length(camera.position);
+        const F32 radiansPerPixel = kMouseRadiansPerPixel / uiScale * (distance - 1.0f) / distance;
+        const F32 yawStep = static_cast<F32>(input.orbitDx) * radiansPerPixel;
+        const F32 pitchStep = Clamp(camera.pitch - static_cast<F32>(input.orbitDy) * radiansPerPixel, -kMaxPitch,
+                                    kMaxPitch) - camera.pitch;
+        // Yaw turns about +Y.
+        F32 sinYaw, cosYaw;
+        SinCos(yawStep, sinYaw, cosYaw);
+        const Vec3 p = camera.position;
+        camera.position = {p.x * cosYaw - p.z * sinYaw, p.y, p.x * sinYaw + p.z * cosYaw};
+        camera.yaw += yawStep;
+        // Pitch turns about the camera's horizontal right axis (Rodrigues).
+        const Vec3 right = ComputeBasis().right;
+        F32 sinPitch, cosPitch;
+        SinCos(pitchStep, sinPitch, cosPitch);
+        const Vec3 q = camera.position;
+        camera.position = Add(Add(Scale(q, cosPitch), Scale(Cross(right, q), sinPitch)),
+                              Scale(right, Dot(right, q) * (1.0f - cosPitch)));
+        camera.pitch += pitchStep;
+        input.orbitDx = 0;
+        input.orbitDy = 0;
+    }
+
     if (camera.yaw > kPi) {
         camera.yaw -= kTau;
     } else if (camera.yaw < -kPi) {
         camera.yaw += kTau;
     }
-    input.mouseDx = 0;
-    input.mouseDy = 0;
 
     const CameraBasis basis = ComputeBasis();
     Vec3 move{};
@@ -1127,6 +1170,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
             input.keyDown[wparam & (kMaxKeys - 1)] = true;
             return 0;
         }
+        case WM_CHAR: {
+            // Characters rather than key codes, so [ and ] work on any layout.
+            const bool repeat = (lparam & (1 << 30)) != 0;
+            const I32 slowest = -kRealTimeRate;
+            const I32 fastest = static_cast<I32>(Count(kTimeRates)) - 1 - kRealTimeRate;
+            if (!repeat && wparam == ']') {
+                input.timeRateStep = Min(input.timeRateStep + 1, fastest);
+            }
+            if (!repeat && wparam == '[') {
+                input.timeRateStep = Max(input.timeRateStep - 1, slowest);
+            }
+            return 0;
+        }
         case WM_KEYUP: {
             input.keyDown[wparam & (kMaxKeys - 1)] = false;
             return 0;
@@ -1144,10 +1200,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
             input.lastMouse = MousePoint(lparam);
             return 0;
         }
+        case WM_MBUTTONDOWN: {
+            SetCapture(hwnd);
+            input.orbiting = true;
+            input.lastMouse = MousePoint(lparam);
+            return 0;
+        }
         case WM_LBUTTONUP:
-        case WM_RBUTTONUP: {
-            ReleaseCapture();
-            input.dragging = false;
+        case WM_RBUTTONUP:
+        case WM_MBUTTONUP: {
+            if (msg == WM_MBUTTONUP) {
+                input.orbiting = false;
+            } else {
+                input.dragging = false;
+            }
+            if (!input.dragging && !input.orbiting) {
+                ReleaseCapture();
+            }
             return 0;
         }
         case WM_MOUSEMOVE: {
@@ -1159,9 +1228,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
                 input.mouseInside = true;
             }
             input.mouse = mouse;
-            if (input.dragging) {
-                input.mouseDx += mouse.x - input.lastMouse.x;
-                input.mouseDy += mouse.y - input.lastMouse.y;
+            if (input.dragging || input.orbiting) {
+                const I32 dx = mouse.x - input.lastMouse.x;
+                const I32 dy = mouse.y - input.lastMouse.y;
+                if (input.dragging) {
+                    input.mouseDx += dx;
+                    input.mouseDy += dy;
+                }
+                if (input.orbiting) {
+                    input.orbitDx += dx;
+                    input.orbitDy += dy;
+                }
                 input.lastMouse = mouse;
             }
             return 0;
@@ -1222,9 +1299,13 @@ int main() {
     QueryPerformanceCounter(&lastTime);
     LARGE_INTEGER fpsStart = lastTime;
     U32 fpsFrames = 0;
-    // Unlike lastTime, this is not reset after a minimize, so the satellites
-    // catch up on the time they missed and stay in real time.
-    LARGE_INTEGER satelliteTime = lastTime;
+    // Simulated time starts at the real UTC time. Unlike lastTime, its counter
+    // is not reset after a minimize, so the simulation keeps running then too.
+    FILETIME startUtc;
+    GetSystemTimeAsFileTime(&startUtc);
+    const U64 simulationStartTicks = (static_cast<U64>(startUtc.dwHighDateTime) << 32) | startUtc.dwLowDateTime;
+    F64 simulationSeconds = 0.0;
+    LARGE_INTEGER simulationClock = lastTime;
 
     for (;;) {
         MSG msg;
@@ -1253,14 +1334,14 @@ int main() {
         const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
         lastTime = now;
         UpdateCamera(Min(dt, kMaxFrameSeconds));
-        const F64 satelliteSeconds = static_cast<F64>(now.QuadPart - satelliteTime.QuadPart) /
-                                     static_cast<F64>(frequency.QuadPart);
-        satelliteTime = now;
-        PropagateConstellation(satelliteStates, kSatelliteCount, satelliteSeconds);
+        const F64 realSeconds = static_cast<F64>(now.QuadPart - simulationClock.QuadPart) /
+                                static_cast<F64>(frequency.QuadPart);
+        simulationClock = now;
+        const F64 simulatedSeconds = realSeconds * TimeRate();
+        simulationSeconds += simulatedSeconds;
+        PropagateConstellation(satelliteStates, kSatelliteCount, simulatedSeconds);
         linkCount = FindLinks(groundStations, satelliteStates, links);
-        FILETIME utcNow;
-        GetSystemTimeAsFileTime(&utcNow);
-        frameUtcTicks = (static_cast<U64>(utcNow.dwHighDateTime) << 32) | utcNow.dwLowDateTime;
+        frameUtcTicks = simulationStartTicks + static_cast<U64>(simulationSeconds * static_cast<F64>(kTicksPerSecond));
         if (DrawFrame()) {
             ++fpsFrames;
         }

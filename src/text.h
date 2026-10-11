@@ -27,13 +27,14 @@ constexpr U32 kTextSolidFlag = 0x8000;
 // Matches TextVertex in text.vert, which mirrors the five attributes of the
 // Slug reference vertex shader.
 struct TextVertex {
-    F32 pos[4];   // xy: position in pixels, zw: dilation normal
-    F32 em[2];    // em-space sample coordinates
+    F32 pos[4]; // xy: position in pixels, zw: dilation normal
+    F32 em[2]; // em-space sample coordinates
     U32 glyph[2]; // band location; band max x | band max y << 16 | flags
-    F32 jac[4];   // inverse Jacobian, em per pixel
-    F32 bnd[4];   // band scale x, y and band offset x, y
-    F32 col[4];   // colour, straight alpha
+    F32 jac[4]; // inverse Jacobian, em per pixel
+    F32 bnd[4]; // band scale x, y and band offset x, y
+    F32 col[4]; // colour, straight alpha
 };
+
 // Matches the push_constant blocks in text.vert and text.frag.
 struct TextPush {
     F32 viewport[2];
@@ -41,6 +42,7 @@ struct TextPush {
     VkDeviceAddress curves;
     VkDeviceAddress bands;
 };
+
 static_assert(sizeof(TextVertex) == 80);
 static_assert(offsetof(TextVertex, glyph) == 24);
 static_assert(offsetof(TextVertex, col) == 64);
@@ -72,6 +74,7 @@ struct TextRenderer {
     F32 pixelsPerEm;
     U32 quadCount;
 };
+
 static TextRenderer textRenderer;
 static SlugFont slugFont;
 
@@ -185,7 +188,7 @@ static void InitText() {
         .pNext = &flags,
         .allocationSize = requirements.size,
         .memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
     };
     VK_CHECK(vkAllocateMemory(r.device, &bufferMemory, nullptr, &textRenderer.bufferMemory));
     VK_CHECK(vkBindBufferMemory(r.device, textRenderer.buffer, textRenderer.bufferMemory, 0));
@@ -208,7 +211,7 @@ static void InitText() {
 
     // Both stages read push constants: the vertex shader the vertex buffer,
     // the fragment shader the curve and band buffers.
-    const VkPushConstantRange range = {
+    constexpr VkPushConstantRange kRange = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
         .size = sizeof(TextPush),
@@ -216,10 +219,11 @@ static void InitText() {
     const VkPipelineLayoutCreateInfo layoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &range,
+        .pPushConstantRanges = &kRange,
     };
     VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &textRenderer.layout));
-    textRenderer.pipeline = CreatePipeline(kTextVert, sizeof(kTextVert), kTextFrag, sizeof(kTextFrag), textRenderer.layout, true);
+    textRenderer.pipeline = CreatePipeline(kTextVert, sizeof(kTextVert),
+                                           kTextFrag, sizeof(kTextFrag), textRenderer.layout, true);
 }
 
 static F32 RoundPixels(const F32 value) {
@@ -229,8 +233,9 @@ static F32 RoundPixels(const F32 value) {
 }
 
 static U32 GlyphIndex(const U8 character) {
-    return character >= kSlugFirstChar && character < kSlugFirstChar + kSlugGlyphCount ?
-           character - kSlugFirstChar : '?' - kSlugFirstChar;
+    return character >= kSlugFirstChar && character < kSlugFirstChar + kSlugGlyphCount
+               ? character - kSlugFirstChar
+               : '?' - kSlugFirstChar;
 }
 
 // Glyph advances are rounded to whole pixels, so every glyph starts on the
@@ -259,7 +264,11 @@ static bool AppendGlyph(const SlugGlyph &glyph, const F32 penX, const F32 baseli
         const F32 emX = right ? glyph.maxX : glyph.minX;
         const F32 emY = bottom ? glyph.minY : glyph.maxY;
         vertices[corner] = {
-            .pos = {penX + emX * pixelsPerEm, baseline - emY * pixelsPerEm, right ? 1.0f : -1.0f, bottom ? 1.0f : -1.0f},
+            .pos = {
+                penX + emX * pixelsPerEm,
+                baseline - emY * pixelsPerEm,
+                right ? 1.0f : -1.0f, bottom ? 1.0f : -1.0f
+            },
             .em = {emX, emY},
             .glyph = {glyph.bandLocation, glyph.bandMaxX | (glyph.bandMaxY << 16)},
             // Em y points up and pixel y down.
@@ -395,8 +404,12 @@ static void AppendHoverLabel() {
     const F32 height = UiPixels(kLineHeight) + 2.0f * padding;
     const F32 mouseX = static_cast<F32>(input.mouse.x);
     const F32 mouseY = static_cast<F32>(input.mouse.y);
-    const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width) ? mouseX + offset : mouseX - offset - width;
-    const F32 y = mouseY + offset + height <= static_cast<F32>(r.extent.height) ? mouseY + offset : mouseY - offset - height;
+    const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width)
+                      ? mouseX + offset
+                      : mouseX - offset - width;
+    const F32 y = mouseY + offset + height <= static_cast<F32>(r.extent.height)
+                      ? mouseY + offset
+                      : mouseY - offset - height;
     AppendPanel(x, y, width, height);
     AppendText(label, x + padding, y + padding);
 }
@@ -408,7 +421,9 @@ static void DrawOverlay() {
     char label[11];
     snprintf(label, sizeof(label), "FPS: %u", displayedFps);
     AppendPanel(UiPixels(kPanelMargin), UiPixels(kPanelMargin), UiPixels(kFpsPanelWidth), UiPixels(kFpsPanelHeight));
-    AppendText(label, UiPixels(kPanelMargin) + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
+    AppendText(label,
+               UiPixels(kPanelMargin) + UiPixels(kPanelPadding),
+               UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
     AppendClock();
     AppendHoverLabel();
     const TextPush push = {

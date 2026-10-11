@@ -15,9 +15,9 @@
 // Not modeled: higher harmonics, drag, the Sun and Moon, polar motion and
 // precession. Over a day these move a low orbit by kilometers.
 
-inline constexpr F64 kEarthMu = 3.986004418e14;       // m^3/s^2, WGS 84
-inline constexpr F64 kEarthRadius = 6378137.0;         // m, WGS 84 equatorial
-inline constexpr F64 kEarthJ2 = 1.08262668e-3;         // EGM2008
+inline constexpr F64 kEarthMu = 3.986004418e14; // m^3/s^2, WGS 84
+inline constexpr F64 kEarthRadius = 6378137.0; // m, WGS 84 equatorial
+inline constexpr F64 kEarthJ2 = 1.08262668e-3; // EGM2008
 inline constexpr F64 kEarthRotationRate = 7.292115e-5; // rad/s, WGS 84
 
 // Longest RK4 step. Error per step grows with the fifth power of the step.
@@ -41,10 +41,10 @@ inline Vec3d J2Acceleration(const Vec3d p, const Vec3d v) {
     const F64 polar = -muOverR3 * (1.0 + bulge * (3.0 - 5.0 * z2OverR2));
     // With spin w about z: centrifugal -w x (w x p) = w^2 (x, y, 0) and
     // Coriolis -2 w x v = 2w (v.y, -v.x, 0).
-    const F64 w = kEarthRotationRate;
+    constexpr F64 kW = kEarthRotationRate;
     return {
-        equatorial * p.x + w * w * p.x + 2.0 * w * v.y,
-        equatorial * p.y + w * w * p.y - 2.0 * w * v.x,
+        equatorial * p.x + kW * kW * p.x + 2.0 * kW * v.y,
+        equatorial * p.y + kW * kW * p.y - 2.0 * kW * v.x,
         polar * p.z,
     };
 }
@@ -87,6 +87,6 @@ inline OrbitState PropagateJ2(const OrbitState state, const F64 seconds) {
 // through 90 degrees east, +Y through the north pole and +Z through the prime
 // meridian.
 inline Vec3 WorldFromEcef(const Vec3d p) {
-    const F64 scale = 1.0 / kEarthRadius;
-    return {static_cast<F32>(p.y * scale), static_cast<F32>(p.z * scale), static_cast<F32>(p.x * scale)};
+    constexpr F64 kScale = 1.0 / kEarthRadius;
+    return {static_cast<F32>(p.y * kScale), static_cast<F32>(p.z * kScale), static_cast<F32>(p.x * kScale)};
 }

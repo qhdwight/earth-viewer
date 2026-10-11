@@ -88,7 +88,9 @@ constexpr F32 kMinAltitude = 1.0e-3f;
 constexpr F32 kBoost = 4.0f;
 constexpr F32 kMaxFrameSeconds = 0.1f;
 // Simulation speeds, as multiples of real time; [ steps up and ] steps down.
-constexpr F64 kTimeRates[] = {0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0};
+constexpr F64 kTimeRates[] = {
+    0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0
+};
 constexpr I32 kRealTimeRate = 4; // index of 1x
 
 constexpr VkImageSubresourceRange kColorSubresource = {
@@ -287,10 +289,12 @@ enum HoverKind : U32 {
     kHoverStation,
     kHoverLink,
 };
+
 struct Hover {
     HoverKind kind;
     U32 index; // into satelliteStates, groundStations or links
 };
+
 static Hover hover;
 // Picking distances from the cursor, in UI pixels. Dots win over links.
 constexpr F32 kPickDotPixels = 8.0f;
@@ -929,8 +933,9 @@ static void PickHover(const Mat4 &viewProj) {
     F32 best = dotRadius * dotRadius;
     for (U32 i = 0; i < kMarkerCount; ++i) {
         const bool satellite = i < kSatelliteCount;
-        const Vec3 p = WorldFromEcef(satellite ? satelliteStates[i].position
-                                               : groundStations[i - kSatelliteCount].position);
+        const Vec3 p = WorldFromEcef(satellite
+                                         ? satelliteStates[i].position
+                                         : groundStations[i - kSatelliteCount].position);
         const Vec4 screen = ProjectToWindow(viewProj, p);
         if (screen.w <= 0.0f || HiddenByGlobe(eye, p)) {
             continue;
@@ -1305,7 +1310,8 @@ int main() {
     // The window size is in UI pixels; scale it for the monitor it opened on.
     const UINT dpi = GetDpiForWindow(hwnd);
     uiScale = static_cast<F32>(dpi) / static_cast<F32>(kDefaultDpi);
-    SetWindowPos(hwnd, nullptr, 0, 0, MulDiv(static_cast<int>(kWindowWidth), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
+    SetWindowPos(hwnd, nullptr, 0, 0,
+                 MulDiv(static_cast<int>(kWindowWidth), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
                  MulDiv(static_cast<int>(kWindowHeight), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowIcons(hwnd, dpi);
@@ -1319,12 +1325,14 @@ int main() {
     WriteStationMarkers();
     r.pipelineLayout = CreatePushLayout(sizeof(PushConstants));
     r.satelliteLayout = CreatePushLayout(sizeof(SatellitePush));
-    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert), kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
-    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert), kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
-    r.satellitePipeline = CreatePipeline(kSatelliteVert, sizeof(kSatelliteVert), kSatelliteFrag,
-                                         sizeof(kSatelliteFrag), r.satelliteLayout, true);
-    r.linkPipeline = CreatePipeline(kLinkVert, sizeof(kLinkVert), kLinkFrag, sizeof(kLinkFrag), r.pipelineLayout,
-                                    true);
+    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert),
+                                      kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
+    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert),
+                                    kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
+    r.satellitePipeline = CreatePipeline(kSatelliteVert, sizeof(kSatelliteVert),
+                                         kSatelliteFrag, sizeof(kSatelliteFrag), r.satelliteLayout, true);
+    r.linkPipeline = CreatePipeline(kLinkVert, sizeof(kLinkVert),
+                                    kLinkFrag, sizeof(kLinkFrag), r.pipelineLayout, true);
     InitText();
 
     LARGE_INTEGER frequency;

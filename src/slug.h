@@ -35,22 +35,22 @@ inline constexpr F32 kSlugBandEpsilon = 1.0f / 1024.0f;
 
 struct SlugGlyph {
     F32 minX, minY, maxX, maxY; // em-space bounds of the control points
-    F32 advance;                // em
+    F32 advance; // em
     // Band index = em coordinate * scale + offset, for x (vertical bands)
     // and y (horizontal bands).
     F32 bandScale[2];
     F32 bandOffset[2];
     U32 bandLocation; // first header in SlugFont::bands
-    U32 bandMaxX;     // vertical band count minus one
-    U32 bandMaxY;     // horizontal band count minus one
-    U32 curveCount;   // zero for blank glyphs such as space
+    U32 bandMaxX; // vertical band count minus one
+    U32 bandMaxY; // horizontal band count minus one
+    U32 curveCount; // zero for blank glyphs such as space
 };
 
 struct SlugFont {
     F32 curves[kSlugMaxCurveTexels][4];
     U32 bands[kSlugMaxBandEntries][2];
     SlugGlyph glyphs[kSlugGlyphCount];
-    F32 ascent;    // em, from the top of the line to the baseline
+    F32 ascent; // em, from the top of the line to the baseline
     F32 capHeight; // em, the height of 'H'
     U32 curveTexelCount;
     U32 bandEntryCount;
@@ -202,8 +202,11 @@ inline U32 SlugChooseBandCount(const SlugGlyphBuilder &builder, const F32 low, c
             U32 inBand = 0;
             for (U32 i = 0; i < builder.curveCount; ++i) {
                 const SlugCurveBounds &curve = builder.curves[i];
-                inBand += (horizontal ? SlugInHorizontalBand(curve, bandMin, bandMax)
-                                      : SlugInVerticalBand(curve, bandMin, bandMax)) ? 1 : 0;
+                inBand += (horizontal
+                               ? SlugInHorizontalBand(curve, bandMin, bandMax)
+                               : SlugInVerticalBand(curve, bandMin, bandMax))
+                              ? 1
+                              : 0;
             }
             load = Max(load, inBand);
         }

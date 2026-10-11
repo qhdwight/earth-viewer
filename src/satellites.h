@@ -70,7 +70,9 @@ inline void InitConstellation(OrbitState *const states) {
                 const Vec3d inertialVelocity = Scale(alongTrack, speed);
                 states[index++] = {
                     .position = position,
-                    .velocity = {inertialVelocity.x + w * position.y, inertialVelocity.y - w * position.x, inertialVelocity.z},
+                    .velocity = {
+                        inertialVelocity.x + w * position.y, inertialVelocity.y - w * position.x, inertialVelocity.z
+                    },
                 };
             }
         }

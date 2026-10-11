@@ -28,7 +28,7 @@ inline constexpr I64 kPacificDaylightOffset = -7 * kSecondsPerHour;
 struct CivilTime {
     I32 year;
     U32 month; // 1 to 12
-    U32 day;   // 1 to 31
+    U32 day; // 1 to 31
     U32 hour;
     U32 minute;
     U32 second;

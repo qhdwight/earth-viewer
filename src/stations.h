@@ -9,7 +9,7 @@
 // Ground stations at random land locations, and the links between them and
 // the satellites they can see.
 
-inline constexpr U32 kStationCount = 32;
+inline constexpr U32 kStationCount = 128;
 inline constexpr U64 kStationSeed = 0x9e3779b97f4a7c15ull; // any fixed value gives a fixed layout
 // A satellite is linked when it is at least 10 degrees above the station's
 // horizon, a typical minimum elevation for ground antennas.

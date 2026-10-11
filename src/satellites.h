@@ -19,8 +19,10 @@ struct WalkerShell {
 };
 
 inline constexpr WalkerShell kShells[] = {
-    {.inclination = 53.0f * kRadiansPerDegree, .planes = 8, .perPlane = 8, .phasing = 1},
-    {.inclination = 97.0f * kRadiansPerDegree, .planes = 2, .perPlane = 8, .phasing = 1}, // near polar
+    {.inclination = 43.0f * kRadiansPerDegree, .planes = 16, .perPlane = 32, .phasing = 1},
+    {.inclination = 53.0f * kRadiansPerDegree, .planes = 16, .perPlane = 32, .phasing = 1},
+    {.inclination = 70.0f * kRadiansPerDegree, .planes = 4, .perPlane = 8, .phasing = 1}, // near polar
+    {.inclination = 97.0f * kRadiansPerDegree, .planes = 4, .perPlane = 8, .phasing = 1}, // near polar
 };
 
 constexpr U32 CountSatellites() {

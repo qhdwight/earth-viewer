@@ -3,8 +3,9 @@ common --enable_platform_specific_config
 # The Vulkan repository rule reads VULKAN_SDK; re-fetch when it changes.
 common --repo_env=VULKAN_SDK
 
-# Every target is built for x86-64-v3 (AVX2, BMI1, LZCNT, POPCNT); the bit/
-# and array/ libraries require it.
+# x86 targets are built for x86-64-v3 (AVX2, BMI1, LZCNT, POPCNT), which the
+# bit/ library requires there. macOS targets Apple silicon, whose baseline
+# already has everything it uses.
 build:windows --cxxopt=/std:c++20 --copt=/arch:AVX2
 build:linux --cxxopt=-std=c++20 --copt=-march=x86-64-v3
-build:macos --cxxopt=-std=c++20 --copt=-march=x86-64-v3
+build:macos --cxxopt=-std=c++20 --cpu=darwin_arm64 --host_cpu=darwin_arm64

@@ -431,8 +431,8 @@ static void AppendHoverLabel() {
     const F32 offset = UiPixels(kHoverOffset);
     const F32 width = TextWidth(label) + 2.0f * padding;
     const F32 height = static_cast<F32>(lines) * UiPixels(kLineHeight) + 2.0f * padding;
-    const F32 mouseX = static_cast<F32>(input.mouse.x);
-    const F32 mouseY = static_cast<F32>(input.mouse.y);
+    const F32 mouseX = static_cast<F32>(input.mouseX);
+    const F32 mouseY = static_cast<F32>(input.mouseY);
     const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width)
                       ? mouseX + offset
                       : mouseX - offset - width;

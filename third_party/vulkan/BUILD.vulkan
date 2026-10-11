@@ -22,6 +22,12 @@ cc_library(
     includes = ["include"],
     linkopts = select({
         "@platforms//os:windows": [],
+        # The SDK's loader is @rpath/libvulkan.1.dylib.
+        "@platforms//os:macos": [
+            "-L%{lib_dir}",
+            "-lvulkan",
+            "-Wl,-rpath,%{lib_dir}",
+        ],
         "//conditions:default": [
             "-L%{lib_dir}",
             "-lvulkan",

@@ -10,7 +10,11 @@
 #pragma once
 
 #include <cstdint>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define BITOPS_ARM64
+#else
 #include <immintrin.h>
+#endif
 
 #if defined(_MSC_VER) && !defined(__clang__) && !defined(__GNUC__)
 #pragma warning (push)
@@ -117,81 +121,129 @@
 // Return the number of bits set in x.
 [[nodiscard]] static inline uint32_t CountSetBits_U8(uint8_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint32_t(__builtin_popcount(x));
+#else
 	return uint32_t(_mm_popcnt_u32(x));
+#endif
 }
 
 // Return the number of bits set in x.
 [[nodiscard]] static inline uint32_t CountSetBits_U16(uint16_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint32_t(__builtin_popcount(x));
+#else
 	return uint32_t(_mm_popcnt_u32(x));
+#endif
 }
 
 // Return the number of bits set in x.
 [[nodiscard]] static inline uint32_t CountSetBits_U32(uint32_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint32_t(__builtin_popcount(x));
+#else
 	return uint32_t(_mm_popcnt_u32(x));
+#endif
 }
 
 // Return the number of bits set in x.
 [[nodiscard]] static inline uint64_t CountSetBits_U64(uint64_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint64_t(__builtin_popcountll(x));
+#else
 	return uint64_t(_mm_popcnt_u64(x));
+#endif
 }
 
 // Return the number of leading (most significant) zero bits.
 // Returns 8 when x is 0.
 [[nodiscard]] static inline uint32_t CountLeadingZeros_U8(uint8_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint32_t(__builtin_clz(x)) - 24U : 8U;
+#else
 	return _lzcnt_u32(x) - 24U;
+#endif
 }
 
 // Return the number of leading (most significant) zero bits.
 // Returns 16 when x is 0.
 [[nodiscard]] static inline uint32_t CountLeadingZeros_U16(uint16_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint32_t(__builtin_clz(x)) - 16U : 16U;
+#else
 	return _lzcnt_u32(x) - 16U;
+#endif
 }
 
 // Return the number of leading (most significant) zero bits.
 // Returns 32 when x is 0.
 [[nodiscard]] static inline uint32_t CountLeadingZeros_U32(uint32_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint32_t(__builtin_clz(x)) : 32U;
+#else
 	return _lzcnt_u32(x);
+#endif
 }
 
 // Return the number of leading (most significant) zero bits.
 // Returns 64 when x is 0.
 [[nodiscard]] static inline uint64_t CountLeadingZeros_U64(uint64_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint64_t(__builtin_clzll(x)) : 64ULL;
+#else
 	return _lzcnt_u64(x);
+#endif
 }
 
 // Return the number of trailing (least significant) zero bits.
 // Returns 8 when x is 0.
 [[nodiscard]] static inline uint32_t CountTrailingZeros_U8(uint8_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint32_t(__builtin_ctz(uint32_t(x) | (1U << 8)));
+#else
 	return _tzcnt_u32(uint32_t(x) | (1U << 8));
+#endif
 }
 
 // Return the number of trailing (least significant) zero bits.
 // Returns 16 when x is 0.
 [[nodiscard]] static inline uint32_t CountTrailingZeros_U16(uint16_t x)
 {
+#if defined(BITOPS_ARM64)
+	return uint32_t(__builtin_ctz(uint32_t(x) | (1U << 16)));
+#else
 	return _tzcnt_u32(uint32_t(x) | (1U << 16));
+#endif
 }
 
 // Return the number of trailing (least significant) zero bits.
 // Returns 32 when x is 0.
 [[nodiscard]] static inline uint32_t CountTrailingZeros_U32(uint32_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint32_t(__builtin_ctz(x)) : 32U;
+#else
 	return _tzcnt_u32(x);
+#endif
 }
 
 // Return the number of trailing (least significant) zero bits.
 // Returns 64 when x is 0.
 [[nodiscard]] static inline uint64_t CountTrailingZeros_U64(uint64_t x)
 {
+#if defined(BITOPS_ARM64)
+	return x ? uint64_t(__builtin_ctzll(x)) : 64ULL;
+#else
 	return _tzcnt_u64(x);
+#endif
 }
 
 // Return a mask consisting of the first (least significant) set bit.
@@ -478,6 +530,7 @@
 #endif
 }
 
+#if !defined(BITOPS_ARM64)
 // Reverse bit order within each byte, while leaving byte order unmofidied.
 [[nodiscard]] static inline __m128i ReverseBitsInBytes_M128(__m128i v)
 {
@@ -487,6 +540,7 @@
 	const __m128i H = _mm_and_si128(_mm_srli_epi32(v, 4), _mm_set1_epi8(0xF));
 	return _mm_or_si128(_mm_shuffle_epi8(lMask, L), _mm_shuffle_epi8(hMask, H));
 }
+#endif
 
 // Reverse bit order.
 [[nodiscard]] static inline uint8_t ReverseBits_U8(uint8_t x)
@@ -511,19 +565,31 @@
 // Reverse bit order.
 [[nodiscard]] static inline uint16_t ReverseBits_U16(uint16_t x)
 {
+#if defined(BITOPS_ARM64)
+	return __builtin_bitreverse16(x);
+#else
 	return ReverseBytes_U16(uint16_t(_mm_cvtsi128_si32(ReverseBitsInBytes_M128(_mm_cvtsi32_si128(x)))));
+#endif
 }
 
 // Reverse bit order.
 [[nodiscard]] static inline uint32_t ReverseBits_U32(uint32_t x)
 {
+#if defined(BITOPS_ARM64)
+	return __builtin_bitreverse32(x);
+#else
 	return ReverseBytes_U32(uint32_t(_mm_cvtsi128_si32(ReverseBitsInBytes_M128(_mm_cvtsi32_si128(int32_t(x))))));
+#endif
 }
 
 // Reverse bit order.
 [[nodiscard]] static inline uint64_t ReverseBits_U64(uint64_t x)
 {
+#if defined(BITOPS_ARM64)
+	return __builtin_bitreverse64(x);
+#else
 	return ReverseBytes_U64(uint64_t(_mm_cvtsi128_si64(ReverseBitsInBytes_M128(_mm_cvtsi64_si128(int64_t(x))))));
+#endif
 }
 
 // Return true if x is a power of 2. To avoid ambiguity: this excludes 0.

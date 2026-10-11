@@ -1,6 +1,8 @@
 #pragma once
 
+#if !defined(__aarch64__)
 #include <immintrin.h>
+#endif
 
 #include "src/core.h"
 
@@ -37,6 +39,10 @@ constexpr Vec3d Sub(const Vec3d a, const Vec3d b) { return {a.x - b.x, a.y - b.y
 constexpr Vec3d Scale(const Vec3d a, const F64 s) { return {a.x * s, a.y * s, a.z * s}; }
 constexpr F64 Dot(const Vec3d a, const Vec3d b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
+#if defined(__aarch64__)
+inline F32 Sqrt(const F32 x) { return __builtin_sqrtf(x); }
+inline F64 Sqrt(const F64 x) { return __builtin_sqrt(x); }
+#else
 inline F32 Sqrt(const F32 x) {
     return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(x)));
 }
@@ -44,6 +50,7 @@ inline F32 Sqrt(const F32 x) {
 inline F64 Sqrt(const F64 x) {
     return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(x)));
 }
+#endif
 
 inline F64 Length(const Vec3d a) { return Sqrt(Dot(a, a)); }
 

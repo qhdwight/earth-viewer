@@ -1,6 +1,7 @@
 #pragma once
 
-// Included after <windows.h>: GDI supplies the glyph outlines.
+// Included after the platform headers: GDI on Windows and Core Text on macOS
+// supply the glyph outlines.
 //
 // Font data for the Slug algorithm by Eric Lengyel, "GPU-Centered Font
 // Rendering Directly from Glyph Outlines", JCGT 2017, which text.frag renders.
@@ -23,7 +24,7 @@
 
 inline constexpr U32 kSlugFirstChar = 32;
 inline constexpr U32 kSlugGlyphCount = 95; // printable ASCII
-// Outlines are requested at one GDI pixel per Consolas design unit.
+// Outlines are requested at one unit per design unit of Consolas or Menlo.
 inline constexpr I32 kSlugOutlineEm = 2048;
 inline constexpr U32 kSlugOutlineBytes = 16384;
 inline constexpr U32 kSlugMaxGlyphCurves = 512;
@@ -67,11 +68,6 @@ struct SlugGlyphBuilder {
     U32 curveCount;
     F32 penX, penY; // end of the last curve, the start of the next
 };
-
-inline F32 SlugFixedToEm(const FIXED value) {
-    return (static_cast<F32>(value.value) + static_cast<F32>(value.fract) * (1.0f / 65536.0f)) /
-           static_cast<F32>(kSlugOutlineEm);
-}
 
 inline void SlugBeginContour(SlugFont &font, SlugGlyphBuilder &builder, const F32 x, const F32 y) {
     if (font.curveTexelCount + 1 > kSlugMaxCurveTexels) {
@@ -126,51 +122,6 @@ inline void SlugAddLine(SlugFont &font, SlugGlyphBuilder &builder, const F32 x, 
 // The final texel of a contour holds only its last end point.
 inline void SlugEndContour(SlugFont &font) {
     font.curveTexelCount += 1;
-}
-
-// Decodes a GGO_NATIVE outline. TrueType contours are lines and quadratic
-// B-splines; in a spline, the on-curve point between two consecutive
-// off-curve points is implied at their midpoint.
-inline void SlugDecodeOutline(SlugFont &font, SlugGlyphBuilder &builder, const U8 *const outline, const U32 size) {
-    const U8 *cursor = outline;
-    while (cursor < outline + size) {
-        const TTPOLYGONHEADER *const header = reinterpret_cast<const TTPOLYGONHEADER *>(cursor);
-        if (header->dwType != TT_POLYGON_TYPE) {
-            Die("reading a glyph contour", header->dwType);
-        }
-        const F32 startX = SlugFixedToEm(header->pfxStart.x);
-        const F32 startY = SlugFixedToEm(header->pfxStart.y);
-        SlugBeginContour(font, builder, startX, startY);
-        const U8 *record = cursor + sizeof(TTPOLYGONHEADER);
-        const U8 *const contourEnd = cursor + header->cb;
-        while (record < contourEnd) {
-            const TTPOLYCURVE *const curve = reinterpret_cast<const TTPOLYCURVE *>(record);
-            const POINTFX *const points = curve->apfx;
-            if (curve->wType == TT_PRIM_LINE) {
-                for (U32 i = 0; i < curve->cpfx; ++i) {
-                    SlugAddLine(font, builder, SlugFixedToEm(points[i].x), SlugFixedToEm(points[i].y));
-                }
-            } else if (curve->wType == TT_PRIM_QSPLINE) {
-                for (U32 i = 0; i + 1 < curve->cpfx; ++i) {
-                    const F32 controlX = SlugFixedToEm(points[i].x);
-                    const F32 controlY = SlugFixedToEm(points[i].y);
-                    const F32 nextX = SlugFixedToEm(points[i + 1].x);
-                    const F32 nextY = SlugFixedToEm(points[i + 1].y);
-                    const bool last = i + 2 == curve->cpfx;
-                    SlugAddCurve(font, builder, controlX, controlY, last ? nextX : 0.5f * (controlX + nextX),
-                                 last ? nextY : 0.5f * (controlY + nextY));
-                }
-            } else {
-                Die("reading a glyph curve (cubic outlines are unsupported)", curve->wType);
-            }
-            record += 2 * sizeof(WORD) + curve->cpfx * sizeof(POINTFX);
-        }
-        if (builder.penX != startX || builder.penY != startY) {
-            SlugAddLine(font, builder, startX, startY);
-        }
-        SlugEndContour(font);
-        cursor = contourEnd;
-    }
 }
 
 inline bool SlugOverlaps(const F32 curveMin, const F32 curveMax, const F32 bandMin, const F32 bandMax) {
@@ -287,6 +238,78 @@ inline void SlugBuildBands(SlugFont &font, SlugGlyph &glyph, const SlugGlyphBuil
     glyph.bandOffset[1] = -glyph.minY * glyph.bandScale[1];
 }
 
+// Fills in a glyph from the outline in the builder.
+inline void SlugFinishGlyph(SlugFont &font, SlugGlyph &glyph, const SlugGlyphBuilder &builder, const F32 advance) {
+    glyph = {};
+    glyph.advance = advance;
+    glyph.curveCount = builder.curveCount;
+    if (builder.curveCount == 0) {
+        return;
+    }
+    // A quadratic curve lies inside the hull of its control points.
+    glyph.minX = glyph.minY = kPosInf;
+    glyph.maxX = glyph.maxY = -kPosInf;
+    for (U32 c = 0; c < builder.curveCount; ++c) {
+        glyph.minX = Min(glyph.minX, builder.curves[c].minX);
+        glyph.minY = Min(glyph.minY, builder.curves[c].minY);
+        glyph.maxX = Max(glyph.maxX, builder.curves[c].maxX);
+        glyph.maxY = Max(glyph.maxY, builder.curves[c].maxY);
+    }
+    SlugBuildBands(font, glyph, builder);
+}
+
+#if defined(_WIN32)
+
+inline F32 SlugFixedToEm(const FIXED value) {
+    return (static_cast<F32>(value.value) + static_cast<F32>(value.fract) * (1.0f / 65536.0f)) /
+           static_cast<F32>(kSlugOutlineEm);
+}
+
+// Decodes a GGO_NATIVE outline. TrueType contours are lines and quadratic
+// B-splines; in a spline, the on-curve point between two consecutive
+// off-curve points is implied at their midpoint.
+inline void SlugDecodeOutline(SlugFont &font, SlugGlyphBuilder &builder, const U8 *const outline, const U32 size) {
+    const U8 *cursor = outline;
+    while (cursor < outline + size) {
+        const TTPOLYGONHEADER *const header = reinterpret_cast<const TTPOLYGONHEADER *>(cursor);
+        if (header->dwType != TT_POLYGON_TYPE) {
+            Die("reading a glyph contour", header->dwType);
+        }
+        const F32 startX = SlugFixedToEm(header->pfxStart.x);
+        const F32 startY = SlugFixedToEm(header->pfxStart.y);
+        SlugBeginContour(font, builder, startX, startY);
+        const U8 *record = cursor + sizeof(TTPOLYGONHEADER);
+        const U8 *const contourEnd = cursor + header->cb;
+        while (record < contourEnd) {
+            const TTPOLYCURVE *const curve = reinterpret_cast<const TTPOLYCURVE *>(record);
+            const POINTFX *const points = curve->apfx;
+            if (curve->wType == TT_PRIM_LINE) {
+                for (U32 i = 0; i < curve->cpfx; ++i) {
+                    SlugAddLine(font, builder, SlugFixedToEm(points[i].x), SlugFixedToEm(points[i].y));
+                }
+            } else if (curve->wType == TT_PRIM_QSPLINE) {
+                for (U32 i = 0; i + 1 < curve->cpfx; ++i) {
+                    const F32 controlX = SlugFixedToEm(points[i].x);
+                    const F32 controlY = SlugFixedToEm(points[i].y);
+                    const F32 nextX = SlugFixedToEm(points[i + 1].x);
+                    const F32 nextY = SlugFixedToEm(points[i + 1].y);
+                    const bool last = i + 2 == curve->cpfx;
+                    SlugAddCurve(font, builder, controlX, controlY, last ? nextX : 0.5f * (controlX + nextX),
+                                 last ? nextY : 0.5f * (controlY + nextY));
+                }
+            } else {
+                Die("reading a glyph curve (cubic outlines are unsupported)", curve->wType);
+            }
+            record += 2 * sizeof(WORD) + curve->cpfx * sizeof(POINTFX);
+        }
+        if (builder.penX != startX || builder.penY != startY) {
+            SlugAddLine(font, builder, startX, startY);
+        }
+        SlugEndContour(font);
+        cursor = contourEnd;
+    }
+}
+
 // Extracts printable ASCII from Consolas as unhinted TrueType outlines in em
 // units, with the baseline at y = 0 and y pointing up.
 inline void BuildSlugFont(SlugFont &font) {
@@ -320,23 +343,8 @@ inline void BuildSlugFont(SlugFont &font) {
         builder.curveCount = 0;
         SlugDecodeOutline(font, builder, outline, size);
 
-        SlugGlyph &glyph = font.glyphs[i];
-        glyph = {};
-        glyph.advance = static_cast<F32>(glyphMetrics.gmCellIncX) / static_cast<F32>(kSlugOutlineEm);
-        glyph.curveCount = builder.curveCount;
-        if (builder.curveCount == 0) {
-            continue;
-        }
-        // A quadratic curve lies inside the hull of its control points.
-        glyph.minX = glyph.minY = kPosInf;
-        glyph.maxX = glyph.maxY = -kPosInf;
-        for (U32 c = 0; c < builder.curveCount; ++c) {
-            glyph.minX = Min(glyph.minX, builder.curves[c].minX);
-            glyph.minY = Min(glyph.minY, builder.curves[c].minY);
-            glyph.maxX = Max(glyph.maxX, builder.curves[c].maxX);
-            glyph.maxY = Max(glyph.maxY, builder.curves[c].maxY);
-        }
-        SlugBuildBands(font, glyph, builder);
+        SlugFinishGlyph(font, font.glyphs[i], builder,
+                        static_cast<F32>(glyphMetrics.gmCellIncX) / static_cast<F32>(kSlugOutlineEm));
     }
     // Measured from the outline: GDI's reported cap height for Consolas is a
     // placeholder of exactly half an em.
@@ -345,3 +353,87 @@ inline void BuildSlugFont(SlugFont &font) {
     DeleteObject(handle);
     DeleteDC(dc);
 }
+
+#elif defined(__APPLE__)
+
+// Core Text reports a glyph's path one element at a time; this carries the
+// contour being built between calls.
+struct SlugPathContext {
+    SlugFont *font;
+    SlugGlyphBuilder *builder;
+    F32 startX, startY;
+    bool open;
+};
+
+inline void SlugCloseContour(SlugPathContext &context) {
+    if (!context.open) {
+        return;
+    }
+    if (context.builder->penX != context.startX || context.builder->penY != context.startY) {
+        SlugAddLine(*context.font, *context.builder, context.startX, context.startY);
+    }
+    SlugEndContour(*context.font);
+    context.open = false;
+}
+
+// CGPathApply callback. TrueType outlines arrive as lines and quadratics with
+// the implied on-curve points already made explicit.
+inline void SlugAddPathElement(void *const info, const CGPathElement *const element) {
+    SlugPathContext &context = *static_cast<SlugPathContext *>(info);
+    const CGPoint *const p = element->points;
+    constexpr F32 kEmPerUnit = 1.0f / static_cast<F32>(kSlugOutlineEm);
+    if (element->type == kCGPathElementMoveToPoint) {
+        SlugCloseContour(context);
+        context.startX = static_cast<F32>(p[0].x) * kEmPerUnit;
+        context.startY = static_cast<F32>(p[0].y) * kEmPerUnit;
+        context.open = true;
+        SlugBeginContour(*context.font, *context.builder, context.startX, context.startY);
+    } else if (element->type == kCGPathElementAddLineToPoint) {
+        SlugAddLine(*context.font, *context.builder, static_cast<F32>(p[0].x) * kEmPerUnit,
+                    static_cast<F32>(p[0].y) * kEmPerUnit);
+    } else if (element->type == kCGPathElementAddQuadCurveToPoint) {
+        SlugAddCurve(*context.font, *context.builder, static_cast<F32>(p[0].x) * kEmPerUnit,
+                     static_cast<F32>(p[0].y) * kEmPerUnit, static_cast<F32>(p[1].x) * kEmPerUnit,
+                     static_cast<F32>(p[1].y) * kEmPerUnit);
+    } else if (element->type == kCGPathElementCloseSubpath) {
+        SlugCloseContour(context);
+    } else {
+        Die("reading a glyph curve (cubic outlines are unsupported)", element->type);
+    }
+}
+
+// Extracts printable ASCII from Menlo as unhinted TrueType outlines in em
+// units, with the baseline at y = 0 and y pointing up.
+inline void BuildSlugFont(SlugFont &font) {
+    const CTFontRef handle = CTFontCreateWithName(CFSTR("Menlo"), static_cast<CGFloat>(kSlugOutlineEm), nullptr);
+    if (!handle) {
+        Die("creating the outline font", 0);
+    }
+    font.ascent = static_cast<F32>(CTFontGetAscent(handle)) / static_cast<F32>(kSlugOutlineEm);
+
+    static SlugGlyphBuilder builder;
+    for (U32 i = 0; i < kSlugGlyphCount; ++i) {
+        const UniChar character = static_cast<UniChar>(kSlugFirstChar + i);
+        CGGlyph glyphIndex;
+        if (!CTFontGetGlyphsForCharacters(handle, &character, &glyphIndex, 1)) {
+            Die("finding a glyph", character);
+        }
+        builder.curveCount = 0;
+        // Blank glyphs such as space have no path.
+        const CGPathRef path = CTFontCreatePathForGlyph(handle, glyphIndex, nullptr);
+        if (path) {
+            SlugPathContext context = {.font = &font, .builder = &builder};
+            CGPathApply(path, &context, SlugAddPathElement);
+            SlugCloseContour(context);
+            CGPathRelease(path);
+        }
+        CGSize advance;
+        CTFontGetAdvancesForGlyphs(handle, kCTFontOrientationHorizontal, &glyphIndex, &advance, 1);
+        SlugFinishGlyph(font, font.glyphs[i], builder,
+                        static_cast<F32>(advance.width) / static_cast<F32>(kSlugOutlineEm));
+    }
+    font.capHeight = font.glyphs['H' - kSlugFirstChar].maxY;
+    CFRelease(handle);
+}
+
+#endif

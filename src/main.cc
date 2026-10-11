@@ -1,3 +1,4 @@
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX  // Bazel predefines this on Windows
 #define NOMINMAX
@@ -7,12 +8,20 @@
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
-
 #define VK_USE_PLATFORM_WIN32_KHR
+#elif defined(__APPLE__)
+#include <CoreText/CoreText.h>
+#include <mach/mach_time.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#include <sys/time.h>
+#include <unistd.h>
+#define VK_USE_PLATFORM_METAL_EXT
+#endif
+
 #include <vulkan/vulkan.h>
 
 #include "src/core.h"
-#include "src/array/fast_array_ops.h"
 #include "src/bit/bitarray.h"
 #include "src/borders.h"
 #include "src/earth_frag.h"
@@ -36,7 +45,12 @@
 
 [[noreturn]] static void Die(char const *what, const I64 code) {
     printf("%s failed (%lld)\n", what, code);
+    fflush(stdout);
+#if defined(_WIN32)
     ExitProcess(1);
+#else
+    _exit(1);
+#endif
 }
 
 #define VK_CHECK(expr)                                                    \
@@ -47,15 +61,14 @@
   } while (0)
 
 constexpr char const *kAppName = "earth-viewer";
-constexpr wchar_t const *kClassName = L"earth-viewer";
-constexpr wchar_t const *kWindowTitle = L"Earth Viewer";
-constexpr int kIdcArrow = 32512; // IDC_ARROW
 
 constexpr U32 kMaxImages = 16;
 constexpr U32 kMaxFormats = 32;
 constexpr U32 kMaxDevices = 16;
 constexpr U32 kMaxQueueFamilies = 16;
 constexpr U32 kMaxKeys = 256;
+// Input::keyDown holds upper-case ASCII letters and this, the Windows VK_SHIFT.
+constexpr U32 kKeyShift = 0x10;
 // Every Vulkan device supports 4x colour multisampling, so no query needed.
 constexpr VkSampleCountFlagBits kSampleCount = VK_SAMPLE_COUNT_4_BIT;
 
@@ -197,14 +210,16 @@ struct CameraBasis {
 struct Input {
     bool keyDown[kMaxKeys];
     bool dragging;
-    POINT lastMouse;
+    I32 lastMouseX;
+    I32 lastMouseY;
     I32 mouseDx;
     I32 mouseDy;
     // Toggled with H. Hidden satellites keep propagating, so they reappear in
     // their real-time positions.
     bool hideSatellites;
     // Cursor position in client pixels, meaningful while mouseInside.
-    POINT mouse;
+    I32 mouseX;
+    I32 mouseY;
     bool mouseInside;
     // Steps through kTimeRates relative to real time, so zero is 1x.
     I32 timeRateStep;
@@ -212,8 +227,9 @@ struct Input {
     bool orbiting;
     I32 orbitDx;
     I32 orbitDy;
-    // Accumulated wheel rotation, in Windows units of WHEEL_DELTA per notch.
-    I32 wheelDelta;
+    // Accumulated wheel rotation in notches; smooth wheels and trackpads give
+    // fractions.
+    F32 wheelNotches;
 };
 
 struct Renderer {
@@ -272,14 +288,49 @@ static F64 TimeRate() {
     return kTimeRates[kRealTimeRate + input.timeRateStep];
 }
 
+// ] steps the simulation rate up and [ steps it down.
+static void StepTimeRate(const U32 character) {
+    const I32 slowest = -kRealTimeRate;
+    const I32 fastest = static_cast<I32>(Count(kTimeRates)) - 1 - kRealTimeRate;
+    if (character == ']') {
+        input.timeRateStep = Min(input.timeRateStep + 1, fastest);
+    }
+    if (character == '[') {
+        input.timeRateStep = Max(input.timeRateStep - 1, slowest);
+    }
+}
+
+// The cursor moved to (x, y) in window pixels. While a button is held the
+// movement turns into look or orbit deltas.
+static void MoveMouse(const I32 x, const I32 y) {
+    input.mouseX = x;
+    input.mouseY = y;
+    if (input.dragging || input.orbiting) {
+        const I32 dx = x - input.lastMouseX;
+        const I32 dy = y - input.lastMouseY;
+        if (input.dragging) {
+            input.mouseDx += dx;
+            input.mouseDy += dy;
+        }
+        if (input.orbiting) {
+            input.orbitDx += dx;
+            input.orbitDy += dy;
+        }
+        input.lastMouseX = x;
+        input.lastMouseY = y;
+    }
+}
+
 constexpr F32 kFpsUpdateSeconds = 0.5f;
 static U32 displayedFps = 0;
-// Physical pixels per UI pixel, a pixel at 100% Windows display scaling. The
-// app is per-monitor DPI aware and renders at full resolution, so sizes meant
-// for the screen, like text, minimum line widths and dots, are given in UI
-// pixels and multiplied by this. Updated when the window changes monitors.
+// Physical pixels per UI pixel, a pixel at 100% Windows display scaling or a
+// macOS point. The app renders at full resolution, so sizes meant for the
+// screen, like text, minimum line widths and dots, are given in UI pixels and
+// multiplied by this. Updated when the window changes monitors.
 static F32 uiScale = 1.0f;
-constexpr U32 kDefaultDpi = 96;
+// Set by the platform layer when the swapchain no longer matches the window
+// and presenting would not report it.
+static bool resizePending = false;
 // Simulated UTC as Windows FILETIME ticks, advanced once per frame at the
 // selected time rate. The Sun, the satellites and the clock all follow it.
 static U64 frameUtcTicks = 0;
@@ -319,6 +370,15 @@ static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted
         }
     }
     Die("finding a memory type", wanted);
+}
+
+static U64 FastFind64(void *p, const U64 n, const U64 v) {
+    for (U64 i = 0; i < n; ++i) {
+        if (static_cast<U64 *>(p)[i] == v) {
+            return i;
+        }
+    }
+    return static_cast<U64>(-1);
 }
 
 static void CreateSwapchain() {
@@ -423,7 +483,13 @@ static void CreateSwapchain() {
     VK_CHECK(vkCreateImageView(r.device, &msaaView, nullptr, &r.msaaView));
 }
 
-static void InitVulkan(HWND hwnd) {
+#if defined(_WIN32)
+#include "src/platform_win32.h"
+#elif defined(__APPLE__)
+#include "src/platform_macos.h"
+#endif
+
+static void InitVulkan() {
     constexpr VkApplicationInfo kApp = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = kAppName,
@@ -432,7 +498,7 @@ static void InitVulkan(HWND hwnd) {
 
     constexpr char const *kInstanceExtensions[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+        kSurfaceExtensionName,
     };
     const VkInstanceCreateInfo instanceInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -442,12 +508,7 @@ static void InitVulkan(HWND hwnd) {
     };
     VK_CHECK(vkCreateInstance(&instanceInfo, nullptr, &r.instance));
 
-    const VkWin32SurfaceCreateInfoKHR surfaceInfo = {
-        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-        .hinstance = GetModuleHandleW(nullptr),
-        .hwnd = hwnd,
-    };
-    VK_CHECK(vkCreateWin32SurfaceKHR(r.instance, &surfaceInfo, nullptr, &r.surface));
+    CreateSurface();
 
     // Pick the first physical device that speaks Vulkan 1.4 and can both draw
     // and present on one queue family.
@@ -465,8 +526,9 @@ static void InitVulkan(HWND hwnd) {
         U32 familyCount = kMaxQueueFamilies;
         vkGetPhysicalDeviceQueueFamilyProperties(devices[iDevice], &familyCount, families);
         for (U32 iFamily = 0; iFamily < familyCount; ++iFamily) {
-            if (!(families[iFamily].queueFlags & VK_QUEUE_GRAPHICS_BIT) ||
-                !vkGetPhysicalDeviceWin32PresentationSupportKHR(devices[iDevice], iFamily)) {
+            VkBool32 presents = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(devices[iDevice], iFamily, r.surface, &presents);
+            if (!(families[iFamily].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !presents) {
                 continue;
             }
 
@@ -833,8 +895,8 @@ static void UpdateCamera(const F32 dt) {
     // keeping the view direction. Dividing the altitude on the way in and
     // multiplying on the way out makes a notch in and a notch out cancel
     // exactly, and fractional notches from smooth wheels zoom proportionally.
-    if (input.wheelDelta != 0) {
-        const F32 notches = static_cast<F32>(input.wheelDelta) / static_cast<F32>(WHEEL_DELTA);
+    if (input.wheelNotches != 0.0f) {
+        const F32 notches = input.wheelNotches;
         const F32 factor = notches > 0.0f ? 1.0f / (1.0f + kZoomPerNotch * notches) : 1.0f - kZoomPerNotch * notches;
         const F32 distance = Length(camera.position);
         // The ceiling only stops zooming out; flying farther with the keys is
@@ -842,7 +904,7 @@ static void UpdateCamera(const F32 dt) {
         const F32 ceiling = Max(kMaxAltitude, distance - 1.0f);
         const F32 altitude = Clamp((distance - 1.0f) * factor, kMinAltitude, ceiling);
         camera.position = Scale(camera.position, (1.0f + altitude) / distance);
-        input.wheelDelta = 0;
+        input.wheelNotches = 0.0f;
     }
 
     if (camera.yaw > kPi) {
@@ -873,7 +935,7 @@ static void UpdateCamera(const F32 dt) {
     }
     if (Dot(move, move) > 0.0f) {
         const F32 altitude = Max(Length(camera.position) - 1.0f, kMinAltitude);
-        const F32 boost = input.keyDown[VK_SHIFT] ? kBoost : 1.0f;
+        const F32 boost = input.keyDown[kKeyShift] ? kBoost : 1.0f;
         const F32 speed = kSpeedPerAltitude * altitude * boost;
         camera.position = Add(camera.position, Scale(Normalize(move), speed * dt));
     }
@@ -949,8 +1011,8 @@ static void PickHover(const Mat4 &viewProj) {
         return;
     }
     const Vec3 eye = camera.position;
-    const F32 mouseX = static_cast<F32>(input.mouse.x) + 0.5f;
-    const F32 mouseY = static_cast<F32>(input.mouse.y) + 0.5f;
+    const F32 mouseX = static_cast<F32>(input.mouseX) + 0.5f;
+    const F32 mouseY = static_cast<F32>(input.mouseY) + 0.5f;
 
     const F32 dotRadius = kPickDotPixels * uiScale;
     F32 best = dotRadius * dotRadius;
@@ -1168,184 +1230,9 @@ static bool DrawFrame() {
     return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
 }
 
-// Window icons, rebuilt from the embedded PNGs at each monitor's DPI.
-static HICON bigIcon = nullptr;
-static HICON smallIcon = nullptr;
-
-// Decodes the smallest embedded PNG at least as large as the icon, so Windows
-// only ever scales down.
-static HICON CreateWindowIcon(const int size) {
-    const bool fromSmall = size <= 32;
-    const U8 *const png = fromSmall ? kIconPng32 : kIconPng64;
-    const DWORD bytes = fromSmall ? sizeof(kIconPng32) : sizeof(kIconPng64);
-    constexpr DWORD kIconFormatVersion = 0x00030000;
-    return CreateIconFromResourceEx(const_cast<PBYTE>(png), bytes, TRUE, kIconFormatVersion, size, size,
-                                    LR_DEFAULTCOLOR);
-}
-
-// The big icon shows in the taskbar and Alt+Tab, the small one in the title bar.
-static void SetWindowIcons(HWND hwnd, const UINT dpi) {
-    const HICON taskbarIcon = CreateWindowIcon(GetSystemMetricsForDpi(SM_CXICON, dpi));
-    const HICON titleBarIcon = CreateWindowIcon(GetSystemMetricsForDpi(SM_CXSMICON, dpi));
-    SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(taskbarIcon));
-    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(titleBarIcon));
-    if (bigIcon) {
-        DestroyIcon(bigIcon);
-    }
-    if (smallIcon) {
-        DestroyIcon(smallIcon);
-    }
-    bigIcon = taskbarIcon;
-    smallIcon = titleBarIcon;
-}
-
-static POINT MousePoint(const LPARAM lparam) {
-    return {.x = static_cast<I16>(LOWORD(lparam)), .y = static_cast<I16>(HIWORD(lparam))};
-}
-
-static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, const LPARAM lparam) {
-    switch (msg) {
-        case WM_DPICHANGED: {
-            // Take the new monitor's scale and the size Windows suggests for
-            // it; the swapchain follows the resize on the next frame.
-            uiScale = static_cast<F32>(HIWORD(wparam)) / static_cast<F32>(kDefaultDpi);
-            SetWindowIcons(hwnd, HIWORD(wparam));
-            const RECT *const suggested = reinterpret_cast<const RECT *>(lparam);
-            SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
-                         suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
-            return 0;
-        }
-        case WM_DESTROY: {
-            PostQuitMessage(0);
-            return 0;
-        }
-        case WM_KEYDOWN: {
-            if (wparam == VK_ESCAPE) {
-                DestroyWindow(hwnd);
-            }
-            // Bit 30 of lparam is set for auto-repeat, so holding H toggles once.
-            const bool repeat = (lparam & (1 << 30)) != 0;
-            if (wparam == 'H' && !repeat) {
-                input.hideSatellites = !input.hideSatellites;
-            }
-            input.keyDown[wparam & (kMaxKeys - 1)] = true;
-            return 0;
-        }
-        case WM_CHAR: {
-            // Characters rather than key codes, so [ and ] work on any layout.
-            const bool repeat = (lparam & (1 << 30)) != 0;
-            const I32 slowest = -kRealTimeRate;
-            const I32 fastest = static_cast<I32>(Count(kTimeRates)) - 1 - kRealTimeRate;
-            if (!repeat && wparam == ']') {
-                input.timeRateStep = Min(input.timeRateStep + 1, fastest);
-            }
-            if (!repeat && wparam == '[') {
-                input.timeRateStep = Max(input.timeRateStep - 1, slowest);
-            }
-            return 0;
-        }
-        case WM_KEYUP: {
-            input.keyDown[wparam & (kMaxKeys - 1)] = false;
-            return 0;
-        }
-        case WM_KILLFOCUS: {
-            for (bool &down: input.keyDown) {
-                down = false;
-            }
-            return 0;
-        }
-        case WM_LBUTTONDOWN:
-        case WM_RBUTTONDOWN: {
-            SetCapture(hwnd);
-            input.dragging = true;
-            input.lastMouse = MousePoint(lparam);
-            return 0;
-        }
-        case WM_MBUTTONDOWN: {
-            SetCapture(hwnd);
-            input.orbiting = true;
-            input.lastMouse = MousePoint(lparam);
-            return 0;
-        }
-        case WM_LBUTTONUP:
-        case WM_RBUTTONUP:
-        case WM_MBUTTONUP: {
-            if (msg == WM_MBUTTONUP) {
-                input.orbiting = false;
-            } else {
-                input.dragging = false;
-            }
-            if (!input.dragging && !input.orbiting) {
-                ReleaseCapture();
-            }
-            return 0;
-        }
-        case WM_MOUSEMOVE: {
-            const POINT mouse = MousePoint(lparam);
-            if (!input.mouseInside) {
-                // Ask for WM_MOUSELEAVE, so the hover label leaves with the cursor.
-                TRACKMOUSEEVENT track = {.cbSize = sizeof(track), .dwFlags = TME_LEAVE, .hwndTrack = hwnd};
-                TrackMouseEvent(&track);
-                input.mouseInside = true;
-            }
-            input.mouse = mouse;
-            if (input.dragging || input.orbiting) {
-                const I32 dx = mouse.x - input.lastMouse.x;
-                const I32 dy = mouse.y - input.lastMouse.y;
-                if (input.dragging) {
-                    input.mouseDx += dx;
-                    input.mouseDy += dy;
-                }
-                if (input.orbiting) {
-                    input.orbitDx += dx;
-                    input.orbitDy += dy;
-                }
-                input.lastMouse = mouse;
-            }
-            return 0;
-        }
-        case WM_MOUSEWHEEL: {
-            // Positive is the wheel rolled away from the user: zoom in.
-            input.wheelDelta += GET_WHEEL_DELTA_WPARAM(wparam);
-            return 0;
-        }
-        case WM_MOUSELEAVE: {
-            input.mouseInside = false;
-            return 0;
-        }
-        default: {
-            return DefWindowProcW(hwnd, msg, wparam, lparam);
-        }
-    }
-}
-
 int main() {
-    HINSTANCE hinstance = GetModuleHandleW(nullptr);
-    const WNDCLASSW wc = {
-        .lpfnWndProc = WndProc,
-        .hInstance = hinstance,
-        .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(kIdcArrow)),
-        .lpszClassName = kClassName,
-    };
-    // Without this Windows renders the app at 96 DPI and stretches the result
-    // on scaled displays, which blurs text and thin lines.
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    RegisterClassW(&wc);
-    HWND hwnd = CreateWindowExW(0, kClassName, kWindowTitle, WS_OVERLAPPEDWINDOW,
-                                CW_USEDEFAULT, CW_USEDEFAULT, kWindowWidth,
-                                kWindowHeight, nullptr, nullptr, hinstance, nullptr);
-    if (!hwnd) Die("CreateWindowExW", static_cast<I64>(GetLastError()));
-    // The window size is in UI pixels; scale it for the monitor it opened on.
-    const UINT dpi = GetDpiForWindow(hwnd);
-    uiScale = static_cast<F32>(dpi) / static_cast<F32>(kDefaultDpi);
-    SetWindowPos(hwnd, nullptr, 0, 0,
-                 MulDiv(static_cast<int>(kWindowWidth), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
-                 MulDiv(static_cast<int>(kWindowHeight), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    SetWindowIcons(hwnd, dpi);
-    ShowWindow(hwnd, SW_SHOW);
-
-    InitVulkan(hwnd);
+    CreateAppWindow();
+    InitVulkan();
     CreateVertexBuffer();
     CreateSatelliteBuffer();
     InitConstellation(satelliteStates);
@@ -1363,49 +1250,40 @@ int main() {
                                     kLinkFrag, sizeof(kLinkFrag), r.pipelineLayout, true);
     InitText();
 
-    LARGE_INTEGER frequency;
-    QueryPerformanceFrequency(&frequency);
-    LARGE_INTEGER lastTime;
-    QueryPerformanceCounter(&lastTime);
-    LARGE_INTEGER fpsStart = lastTime;
+    const U64 frequency = CounterFrequency();
+    U64 lastTime = Counter();
+    U64 fpsStart = lastTime;
     U32 fpsFrames = 0;
     // Simulated time starts at the real UTC time. Unlike lastTime, its counter
     // is not reset after a minimize, so the simulation keeps running then too.
-    FILETIME startUtc;
-    GetSystemTimeAsFileTime(&startUtc);
-    const U64 simulationStartTicks = (static_cast<U64>(startUtc.dwHighDateTime) << 32) | startUtc.dwLowDateTime;
+    const U64 simulationStartTicks = UtcFileTimeTicks();
     F64 simulationSeconds = 0.0;
-    LARGE_INTEGER simulationClock = lastTime;
+    U64 simulationClock = lastTime;
 
     for (;;) {
-        MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                vkDeviceWaitIdle(r.device);
-                DestroyText();
-                return 0;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        if (!PumpEvents()) {
+            vkDeviceWaitIdle(r.device);
+            DestroyText();
+            return 0;
         }
 
-        RECT rect;
-        GetClientRect(hwnd, &rect);
-        if (rect.right <= rect.left || rect.bottom <= rect.top) {
-            WaitMessage(); // minimized: block instead of spinning
-            QueryPerformanceCounter(&lastTime);
+        if (!WindowVisible()) {
+            WaitForEvents(); // minimized: block instead of spinning
+            lastTime = Counter();
             fpsStart = lastTime;
             fpsFrames = 0;
             continue;
         }
+        if (resizePending) {
+            resizePending = false;
+            CreateSwapchain();
+        }
 
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-        const F32 dt = static_cast<F32>(now.QuadPart - lastTime.QuadPart) / static_cast<F32>(frequency.QuadPart);
+        const U64 now = Counter();
+        const F32 dt = static_cast<F32>(now - lastTime) / static_cast<F32>(frequency);
         lastTime = now;
         UpdateCamera(Min(dt, kMaxFrameSeconds));
-        const F64 realSeconds = static_cast<F64>(now.QuadPart - simulationClock.QuadPart) /
-                                static_cast<F64>(frequency.QuadPart);
+        const F64 realSeconds = static_cast<F64>(now - simulationClock) / static_cast<F64>(frequency);
         simulationClock = now;
         const F64 simulatedSeconds = realSeconds * TimeRate();
         simulationSeconds += simulatedSeconds;
@@ -1415,10 +1293,8 @@ int main() {
         if (DrawFrame()) {
             ++fpsFrames;
         }
-        LARGE_INTEGER frameEnd;
-        QueryPerformanceCounter(&frameEnd);
-        const F32 fpsSeconds = static_cast<F32>(frameEnd.QuadPart - fpsStart.QuadPart) /
-                               static_cast<F32>(frequency.QuadPart);
+        const U64 frameEnd = Counter();
+        const F32 fpsSeconds = static_cast<F32>(frameEnd - fpsStart) / static_cast<F32>(frequency);
         if (fpsSeconds >= kFpsUpdateSeconds) {
             const F32 fps = static_cast<F32>(fpsFrames) / fpsSeconds;
             displayedFps = static_cast<U32>(Min(fps + 0.5f, 99999.0f));

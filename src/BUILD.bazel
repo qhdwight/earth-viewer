@@ -89,6 +89,7 @@ cc_binary(
     srcs = [
         "borders.h",
         "clock.h",
+        "icon.h",
         "main.cc",
         "satellites.h",
         "slug.h",

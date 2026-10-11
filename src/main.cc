@@ -17,6 +17,7 @@
 #include "src/borders.h"
 #include "src/earth_frag.h"
 #include "src/earth_vert.h"
+#include "src/icon.h"
 #include "src/link_frag.h"
 #include "src/link_vert.h"
 #include "src/math.h"
@@ -1139,6 +1140,37 @@ static bool DrawFrame() {
     return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
 }
 
+// Window icons, rebuilt from the embedded PNGs at each monitor's DPI.
+static HICON bigIcon = nullptr;
+static HICON smallIcon = nullptr;
+
+// Decodes the smallest embedded PNG at least as large as the icon, so Windows
+// only ever scales down.
+static HICON CreateWindowIcon(const int size) {
+    const bool fromSmall = size <= 32;
+    const U8 *const png = fromSmall ? kIconPng32 : kIconPng64;
+    const DWORD bytes = fromSmall ? sizeof(kIconPng32) : sizeof(kIconPng64);
+    constexpr DWORD kIconFormatVersion = 0x00030000;
+    return CreateIconFromResourceEx(const_cast<PBYTE>(png), bytes, TRUE, kIconFormatVersion, size, size,
+                                    LR_DEFAULTCOLOR);
+}
+
+// The big icon shows in the taskbar and Alt+Tab, the small one in the title bar.
+static void SetWindowIcons(HWND hwnd, const UINT dpi) {
+    const HICON taskbarIcon = CreateWindowIcon(GetSystemMetricsForDpi(SM_CXICON, dpi));
+    const HICON titleBarIcon = CreateWindowIcon(GetSystemMetricsForDpi(SM_CXSMICON, dpi));
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(taskbarIcon));
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(titleBarIcon));
+    if (bigIcon) {
+        DestroyIcon(bigIcon);
+    }
+    if (smallIcon) {
+        DestroyIcon(smallIcon);
+    }
+    bigIcon = taskbarIcon;
+    smallIcon = titleBarIcon;
+}
+
 static POINT MousePoint(const LPARAM lparam) {
     return {.x = static_cast<I16>(LOWORD(lparam)), .y = static_cast<I16>(HIWORD(lparam))};
 }
@@ -1149,6 +1181,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
             // Take the new monitor's scale and the size Windows suggests for
             // it; the swapchain follows the resize on the next frame.
             uiScale = static_cast<F32>(HIWORD(wparam)) / static_cast<F32>(kDefaultDpi);
+            SetWindowIcons(hwnd, HIWORD(wparam));
             const RECT *const suggested = reinterpret_cast<const RECT *>(lparam);
             SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
                          suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1275,6 +1308,7 @@ int main() {
     SetWindowPos(hwnd, nullptr, 0, 0, MulDiv(static_cast<int>(kWindowWidth), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
                  MulDiv(static_cast<int>(kWindowHeight), static_cast<int>(dpi), static_cast<int>(kDefaultDpi)),
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowIcons(hwnd, dpi);
     ShowWindow(hwnd, SW_SHOW);
 
     InitVulkan(hwnd);

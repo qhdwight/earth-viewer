@@ -8,6 +8,10 @@ struct Vec3 {
     F32 x, y, z;
 };
 
+struct Vec4 {
+    F32 x, y, z, w;
+};
+
 // Double precision, for orbits: float resolves a low orbit only to about half
 // a meter.
 struct Vec3d {
@@ -89,6 +93,16 @@ constexpr Mat4 View(const Vec3 position, const Vec3 right, const Vec3 up, const 
             right.z, up.z, -forward.z, 0.0f,
             -Dot(right, position), -Dot(up, position), Dot(forward, position), 1.0f,
         }
+    };
+}
+
+// m * (p, 1), with m column-major.
+constexpr Vec4 TransformPoint(const Mat4 &m, const Vec3 p) {
+    return {
+        m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12],
+        m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13],
+        m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14],
+        m.m[3] * p.x + m.m[7] * p.y + m.m[11] * p.z + m.m[15],
     };
 }
 

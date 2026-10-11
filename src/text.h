@@ -19,6 +19,7 @@ constexpr F32 kPanelPadding = 6.0f;
 constexpr F32 kLineHeight = 24.0f;
 constexpr F32 kFpsPanelWidth = 132.0f;
 constexpr F32 kFpsPanelHeight = 32.0f;
+constexpr F32 kHoverOffset = 16.0f; // from the cursor to the hover label
 // Marks quads that text.frag fills solid, for panels. Bit 15 of the band
 // maxima word, which Slug glyph data leaves zero.
 constexpr U32 kTextSolidFlag = 0x8000;
@@ -365,6 +366,33 @@ static void AppendClock() {
     AppendText(label, x + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
 }
 
+// Names what the cursor is over, beside the cursor and kept inside the window.
+// Links are named by their ends: their indices change every frame.
+static void AppendHoverLabel() {
+    if (hover.kind == kHoverNone) {
+        return;
+    }
+    char label[80];
+    if (hover.kind == kHoverSatellite) {
+        snprintf(label, sizeof(label), "Satellite #%u", hover.index);
+    } else if (hover.kind == kHoverStation) {
+        snprintf(label, sizeof(label), "Ground station #%u", hover.index);
+    } else {
+        snprintf(label, sizeof(label), "Link: ground station #%u to satellite #%u",
+                 static_cast<U32>(links[hover.index].station), static_cast<U32>(links[hover.index].satellite));
+    }
+    const F32 padding = UiPixels(kPanelPadding);
+    const F32 offset = UiPixels(kHoverOffset);
+    const F32 width = TextWidth(label) + 2.0f * padding;
+    const F32 height = UiPixels(kLineHeight) + 2.0f * padding;
+    const F32 mouseX = static_cast<F32>(input.mouse.x);
+    const F32 mouseY = static_cast<F32>(input.mouse.y);
+    const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width) ? mouseX + offset : mouseX - offset - width;
+    const F32 y = mouseY + offset + height <= static_cast<F32>(r.extent.height) ? mouseY + offset : mouseY - offset - height;
+    AppendPanel(x, y, width, height);
+    AppendText(label, x + padding, y + padding);
+}
+
 static void DrawOverlay() {
     // The UI scale changes when the window moves to another monitor.
     textRenderer.pixelsPerEm = UiPixels(kTextCapHeightPixels) / slugFont.capHeight;
@@ -374,6 +402,7 @@ static void DrawOverlay() {
     AppendPanel(UiPixels(kPanelMargin), UiPixels(kPanelMargin), UiPixels(kFpsPanelWidth), UiPixels(kFpsPanelHeight));
     AppendText(label, UiPixels(kPanelMargin) + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
     AppendClock();
+    AppendHoverLabel();
     const TextPush push = {
         .viewport = {static_cast<F32>(r.extent.width), static_cast<F32>(r.extent.height)},
         .vertices = textRenderer.address,

@@ -192,6 +192,9 @@ struct Input {
     // Toggled with H. Hidden satellites keep propagating, so they reappear in
     // their real-time positions.
     bool hideSatellites;
+    // Cursor position in client pixels, meaningful while mouseInside.
+    POINT mouse;
+    bool mouseInside;
 };
 
 struct Renderer {
@@ -262,6 +265,25 @@ static OrbitState satelliteStates[kSatelliteCount];
 static GroundStation groundStations[kStationCount];
 static Link links[kMaxLinks];
 static U32 linkCount = 0;
+
+// What the cursor is over: found each frame by PickHover, labelled by DrawOverlay.
+enum HoverKind : U32 {
+    kHoverNone,
+    kHoverSatellite,
+    kHoverStation,
+    kHoverLink,
+};
+struct Hover {
+    HoverKind kind;
+    U32 index; // into satelliteStates, groundStations or links
+};
+static Hover hover;
+// Picking distances from the cursor, in UI pixels. Dots win over links.
+constexpr F32 kPickDotPixels = 8.0f;
+constexpr F32 kPickLinkPixels = 5.0f;
+// Points on the surface sit exactly on the globe; as in the shaders, this
+// margin keeps them from counting as hidden behind it.
+constexpr F32 kOcclusionMargin = 0.001f;
 
 static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
@@ -822,6 +844,98 @@ static SatellitePush BuildSatellitePush(const PushConstants &scene) {
     };
 }
 
+// The shaders' visibility test: p is hidden when the line of sight from the
+// camera meets the globe first, solving |eye + t (p - eye)| = 1 for t in (0, 1).
+static bool HiddenByGlobe(const Vec3 eye, const Vec3 p) {
+    const Vec3 d = Sub(p, eye);
+    const F32 a = Dot(d, d);
+    const F32 b = Dot(eye, d);
+    const F32 discriminant = b * b - a * (Dot(eye, eye) - 1.0f);
+    if (discriminant <= 0.0f) {
+        return false;
+    }
+    const F32 t = (-b - Sqrt(discriminant)) / a;
+    return t > 0.0f && t < 1.0f - kOcclusionMargin;
+}
+
+// Window pixel coordinates of a world point; w <= 0 means behind the camera.
+static Vec4 ProjectToWindow(const Mat4 &viewProj, const Vec3 p) {
+    const Vec4 clip = TransformPoint(viewProj, p);
+    const F32 inverseW = clip.w > 0.0f ? 1.0f / clip.w : 0.0f;
+    return {
+        (clip.x * inverseW + 1.0f) * 0.5f * static_cast<F32>(r.extent.width),
+        (clip.y * inverseW + 1.0f) * 0.5f * static_cast<F32>(r.extent.height),
+        0.0f,
+        clip.w,
+    };
+}
+
+// Finds the visible satellite or station nearest the cursor, or failing that
+// the nearest visible link, using the frame's own projection.
+static void PickHover(const Mat4 &viewProj) {
+    hover = {.kind = kHoverNone, .index = 0};
+    if (!input.mouseInside || input.hideSatellites) {
+        return;
+    }
+    const Vec3 eye = camera.position;
+    const F32 mouseX = static_cast<F32>(input.mouse.x) + 0.5f;
+    const F32 mouseY = static_cast<F32>(input.mouse.y) + 0.5f;
+
+    const F32 dotRadius = kPickDotPixels * uiScale;
+    F32 best = dotRadius * dotRadius;
+    for (U32 i = 0; i < kMarkerCount; ++i) {
+        const bool satellite = i < kSatelliteCount;
+        const Vec3 p = WorldFromEcef(satellite ? satelliteStates[i].position
+                                               : groundStations[i - kSatelliteCount].position);
+        const Vec4 screen = ProjectToWindow(viewProj, p);
+        if (screen.w <= 0.0f || HiddenByGlobe(eye, p)) {
+            continue;
+        }
+        const F32 dx = screen.x - mouseX;
+        const F32 dy = screen.y - mouseY;
+        if (dx * dx + dy * dy < best) {
+            best = dx * dx + dy * dy;
+            hover = {
+                .kind = satellite ? kHoverSatellite : kHoverStation,
+                .index = satellite ? i : i - kSatelliteCount,
+            };
+        }
+    }
+    if (hover.kind != kHoverNone) {
+        return;
+    }
+
+    const F32 linkRadius = kPickLinkPixels * uiScale;
+    best = linkRadius * linkRadius;
+    for (U32 i = 0; i < linkCount; ++i) {
+        const Vec3 p0 = WorldFromEcef(groundStations[links[i].station].position);
+        const Vec3 p1 = WorldFromEcef(satelliteStates[links[i].satellite].position);
+        const Vec4 s0 = ProjectToWindow(viewProj, p0);
+        const Vec4 s1 = ProjectToWindow(viewProj, p1);
+        if (s0.w <= 0.0f || s1.w <= 0.0f) {
+            continue;
+        }
+        // Nearest point on the segment as drawn on screen.
+        const F32 ex = s1.x - s0.x;
+        const F32 ey = s1.y - s0.y;
+        const F32 length2 = Max(ex * ex + ey * ey, 1.0e-6f);
+        const F32 t = Clamp(((mouseX - s0.x) * ex + (mouseY - s0.y) * ey) / length2, 0.0f, 1.0f);
+        const F32 dx = s0.x + t * ex - mouseX;
+        const F32 dy = s0.y + t * ey - mouseY;
+        if (dx * dx + dy * dy >= best) {
+            continue;
+        }
+        // The matching point along the 3D segment: screen space and world space
+        // are related by perspective, so the parameter needs correcting.
+        const F32 u = t * s0.w / (t * s0.w + (1.0f - t) * s1.w);
+        if (HiddenByGlobe(eye, Add(p0, Scale(Sub(p1, p0), u)))) {
+            continue;
+        }
+        best = dx * dx + dy * dy;
+        hover = {.kind = kHoverLink, .index = i};
+    }
+}
+
 static bool DrawFrame() {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
 
@@ -890,6 +1004,7 @@ static bool DrawFrame() {
     vkCmdBeginRendering(r.cmd, &rendering);
 
     const PushConstants push = BuildPushConstants();
+    PickHover(push.viewProj);
     vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(push), &push);
     const VkViewport viewport = {
@@ -1036,12 +1151,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
             return 0;
         }
         case WM_MOUSEMOVE: {
+            const POINT mouse = MousePoint(lparam);
+            if (!input.mouseInside) {
+                // Ask for WM_MOUSELEAVE, so the hover label leaves with the cursor.
+                TRACKMOUSEEVENT track = {.cbSize = sizeof(track), .dwFlags = TME_LEAVE, .hwndTrack = hwnd};
+                TrackMouseEvent(&track);
+                input.mouseInside = true;
+            }
+            input.mouse = mouse;
             if (input.dragging) {
-                const POINT mouse = MousePoint(lparam);
                 input.mouseDx += mouse.x - input.lastMouse.x;
                 input.mouseDy += mouse.y - input.lastMouse.y;
                 input.lastMouse = mouse;
             }
+            return 0;
+        }
+        case WM_MOUSELEAVE: {
+            input.mouseInside = false;
             return 0;
         }
         default: {

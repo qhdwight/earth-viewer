@@ -383,25 +383,54 @@ static void AppendClock() {
     AppendText(label, x + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
 }
 
+// Writes a satellite's or station's ECEF state and WGS 84 position. Stations
+// are fixed to the Earth, so they pass no velocity and get no velocity line.
+// Latitude and longitude are signed degrees: negative is south or west.
+static void FormatStateLabel(char *const label, const U32 size, const char *const name, const U32 index,
+                             const Vec3d position, const Vec3d *const velocity) {
+    const Geodetic geodetic = GeodeticFromEcef(position);
+    char velocityLine[64] = "";
+    if (velocity) {
+        snprintf(velocityLine, sizeof(velocityLine), "ECEF vel %11.5f %11.5f %11.5f km/s\n",
+                 velocity->x / 1000.0, velocity->y / 1000.0, velocity->z / 1000.0);
+    }
+    snprintf(label, size,
+             "%s #%u\n"
+             "ECEF pos %11.3f %11.3f %11.3f km\n"
+             "%s"
+             "WGS84 lat %.6f  lon %.6f  alt %.3f km",
+             name, index,
+             position.x / 1000.0, position.y / 1000.0, position.z / 1000.0,
+             velocityLine,
+             geodetic.latitude * kDegreesPerRadian, geodetic.longitude * kDegreesPerRadian,
+             geodetic.altitude / 1000.0);
+}
+
 // Names what the cursor is over, beside the cursor and kept inside the window.
 // Links are named by their ends: their indices change every frame.
 static void AppendHoverLabel() {
     if (hover.kind == kHoverNone) {
         return;
     }
-    char label[80];
+    char label[256];
     if (hover.kind == kHoverSatellite) {
-        snprintf(label, sizeof(label), "Satellite #%u", hover.index);
+        const OrbitState &state = satelliteStates[hover.index];
+        FormatStateLabel(label, sizeof(label), "Satellite", hover.index, state.position, &state.velocity);
     } else if (hover.kind == kHoverStation) {
-        snprintf(label, sizeof(label), "Ground station #%u", hover.index);
+        FormatStateLabel(label, sizeof(label), "Ground station", hover.index, groundStations[hover.index].position,
+                         nullptr);
     } else {
         snprintf(label, sizeof(label), "Link: ground station #%u to satellite #%u",
                  static_cast<U32>(links[hover.index].station), static_cast<U32>(links[hover.index].satellite));
     }
+    U32 lines = 1;
+    for (const char *c = label; *c != '\0'; ++c) {
+        lines += *c == '\n' ? 1 : 0;
+    }
     const F32 padding = UiPixels(kPanelPadding);
     const F32 offset = UiPixels(kHoverOffset);
     const F32 width = TextWidth(label) + 2.0f * padding;
-    const F32 height = UiPixels(kLineHeight) + 2.0f * padding;
+    const F32 height = static_cast<F32>(lines) * UiPixels(kLineHeight) + 2.0f * padding;
     const F32 mouseX = static_cast<F32>(input.mouse.x);
     const F32 mouseY = static_cast<F32>(input.mouse.y);
     const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width)

@@ -47,6 +47,44 @@ inline F64 Sqrt(const F64 x) {
 
 inline F64 Length(const Vec3d a) { return Sqrt(Dot(a, a)); }
 
+inline constexpr F64 kPi64 = 3.14159265358979323846;
+
+// Arctangent of t in [0, 1], to double precision. Two half-angle steps,
+// atan t = 2 atan(t / (1 + sqrt(1 + t^2))), bring t below tan(pi/16), about
+// 0.199, where twelve terms of the Taylor series leave an error near 1e-19.
+inline F64 ArcTanUnit(const F64 t) {
+    const F64 half = t / (1.0 + Sqrt(1.0 + t * t));
+    const F64 quarter = half / (1.0 + Sqrt(1.0 + half * half));
+    const F64 square = quarter * quarter;
+    F64 sum = 0.0;
+    F64 power = quarter;
+    for (U32 k = 0; k < 12; ++k) {
+        const F64 term = power / static_cast<F64>(2 * k + 1);
+        sum += (k & 1) != 0 ? -term : term;
+        power *= square;
+    }
+    return 4.0 * sum;
+}
+
+// Angle of (x, y) from +x in radians, in (-pi, pi], to double precision.
+inline F64 ArcTan2(const F64 y, const F64 x) {
+    const F64 absX = Abs(x);
+    const F64 absY = Abs(y);
+    if (absX == 0.0 && absY == 0.0) {
+        return 0.0;
+    }
+    // Fold into the first octant, where the ratio is at most 1.
+    const bool steep = absY > absX;
+    F64 angle = ArcTanUnit(steep ? absX / absY : absY / absX);
+    if (steep) {
+        angle = 0.5 * kPi64 - angle;
+    }
+    if (x < 0.0) {
+        angle = kPi64 - angle;
+    }
+    return y < 0.0 ? -angle : angle;
+}
+
 inline F32 Length(const Vec3 a) { return Sqrt(Dot(a, a)); }
 
 inline Vec3 Normalize(const Vec3 a) { return Scale(a, 1.0f / Length(a)); }

@@ -17,6 +17,7 @@
 #include "src/borders.h"
 #include "src/earth_frag.h"
 #include "src/earth_vert.h"
+#include "src/geodetic.h"
 #include "src/icon.h"
 #include "src/link_frag.h"
 #include "src/link_vert.h"

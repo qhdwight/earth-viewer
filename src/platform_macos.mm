@@ -62,7 +62,8 @@ void CreateAppWindow() {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        NSData *const iconData = [NSData dataWithBytes:kIconPng64 length:sizeof(kIconPng64)];
+        // The Dock draws icons at up to 512 pixels.
+        NSData *const iconData = [NSData dataWithBytes:kIconPng512 length:sizeof(kIconPng512)];
         NSApp.applicationIconImage = [[NSImage alloc] initWithData:iconData];
 
         // The content size is in points, which match UI pixels.

@@ -2,10 +2,13 @@
 
 Usage: python tools/gen_icon.py assets/logo.png src/icon.h
 
-Needs Pillow. The window and taskbar never show the icon larger than 64
-pixels, so the 512 pixel logo is downscaled to the sizes the app uses rather
-than embedded whole. At startup main.cc turns the PNG bytes into icons with
-CreateIconFromResourceEx, so no resource compiler is involved.
+Needs Pillow. The logo is downscaled to the sizes the app uses rather than
+embedded whole. On Windows the window and taskbar never show the icon larger
+than 64 pixels, and platform_win32.h turns those PNG bytes into icons with
+CreateIconFromResourceEx, so no resource compiler is involved. The macOS Dock
+shows it at up to 256 points, 512 pixels on a Retina display, so
+platform_macos.mm uses the 512 pixel one. Each build only links the sizes it
+references.
 """
 
 import io
@@ -13,7 +16,7 @@ import sys
 
 from PIL import Image
 
-SIZES = (32, 64)
+SIZES = (32, 64, 512)
 BYTES_PER_LINE = 20
 
 
@@ -25,7 +28,7 @@ def main(src, dst):
         "",
         '#include "src/core.h"',
         "",
-        "// PNG files, smallest first; main.cc picks one per icon size.",
+        "// PNG files, smallest first; the platform layer picks one per icon size.",
     ]
     for size in SIZES:
         buffer = io.BytesIO()

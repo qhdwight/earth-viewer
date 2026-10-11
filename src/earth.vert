@@ -18,7 +18,7 @@ layout(push_constant) uniform PushConstants {
     mat4 viewProj;
     vec4 cameraPos;
     // x: half width in world units, y: minimum half width per unit of view
-    // depth, z: anti-aliasing padding per unit of view depth.
+    // depth, z: padding for anti-aliasing and glow per unit of view depth.
     vec4 line;
     vec4 sunDirection; // used by sphere.frag
     VertexBuffer vertexBuffer;
@@ -64,8 +64,9 @@ void main() {
     const vec4 clip = pc.viewProj * vec4(p, 1.0);
     const float depth = max(clip.w, 0.0);
     const float halfWidth = max(pc.line.x, pc.line.y * depth);
-    // The geometry is padded by about a pixel so the fragment shader can fade
-    // the true edge; ribbon coordinates stay in units of the true half width.
+    // The geometry is padded so the fragment shader can fade the true edge
+    // and draw the glow; ribbon coordinates stay in units of the true half
+    // width.
     const float paddedHalfWidth = halfWidth + pc.line.z * depth;
     const float padded = paddedHalfWidth / halfWidth;
     const vec3 offset = (across * side + along * (end * 2.0 - 1.0)) * paddedHalfWidth;

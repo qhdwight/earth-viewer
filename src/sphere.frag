@@ -10,17 +10,36 @@ layout(push_constant) uniform PushConstants {
     vec4 sunDirection;
 } pc;
 
-const vec3 kSphereColor = vec3(0.005); // linear; the swapchain is sRGB
+// Colours are linear; the swapchain is sRGB. The palette follows 1980s
+// computer graphics: neon green coastlines and cyan grids on black.
+const vec3 kSphereColor = vec3(0.002, 0.008, 0.008);
 const float kStarGridScale = 180.0;
 const float kStarDensity = 0.025;
 const float kPi = 3.14159265;
+
+// Latitude and longitude lines, drawn exactly from the ray hit rather than as
+// geometry. Widths are in UI pixels, so the lines stay faint at any zoom.
+const float kGraticuleDegrees = 15.0;
+const vec3 kGraticuleColor = vec3(0.06, 0.5, 0.7);
+const float kGraticuleIntensity = 0.16;
+const float kGraticuleMajorBoost = 2.0; // the equator and prime meridian
+const float kGraticuleWidthPixels = 1.0;
+// Lines closer together than this on screen fade out, so the meridians do
+// not merge into a solid cap near the poles or at the limb.
+const float kGridMinSpacingPixels = 5.0;
+
+// The sky is the inside of a gridded cube around the camera, like a room
+// drawn in vector graphics. It turns with the view but never gets closer.
+const float kRoomCellsPerHalfFace = 8.0;
+const vec3 kRoomColor = vec3(0.02, 0.15, 0.35);
+const float kRoomIntensity = 0.15;
 
 // The glow is a thin haze whose density falls off exponentially with height
 // above the surface. Its size is physical, in Earth radii, so it scales with
 // zoom like everything else.
 const float kGlowScaleHeight = 0.02; // about 250 km
 const float kGlowGain = 1.8;
-const vec3 kGlowColor = vec3(1.0);
+const vec3 kGlowColor = vec3(0.25, 1.0, 0.8);
 // The glow is full strength where the haze is sunlit and falls to
 // kNightGlow on the night side. The haze sits above the ground, so light
 // wraps a little past the terminator: kTwilightWrap is the cosine of the
@@ -59,12 +78,63 @@ vec3 StarField(const vec3 direction, const float pixelAngle) {
                 const float radius = mix(0.55, 1.15, brightness * brightness);
                 const float distancePixels = length(direction - normalize(point)) / pixelAngle;
                 const float coverage = 1.0 - smoothstep(max(radius - 0.5, 0.0), radius + 0.5, distancePixels);
-                const vec3 tint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 0.9, 0.75), random.z);
+                const vec3 tint = mix(vec3(0.6, 0.85, 1.0), vec3(0.8, 1.0, 0.95), random.z);
                 color += tint * mix(0.12, 0.8, brightness * brightness) * coverage;
             }
         }
     }
     return color;
+}
+
+// Coverage of the grid lines at integer values of coordinate, a family that
+// moves footprint cells per pixel. Lines get one pixel of anti-aliasing and
+// fade out once they crowd together on screen.
+float GridLines(const float coordinate, const float footprint, const float widthPixels) {
+    const float distancePixels = abs(fract(coordinate + 0.5) - 0.5) / max(footprint, 1.0e-9);
+    const float halfWidth = 0.5 * widthPixels;
+    const float line = 1.0 - smoothstep(halfWidth - 0.5, halfWidth + 0.5, distancePixels);
+    const float spacingPixels = 1.0 / max(footprint, 1.0e-9);
+    // Thinner than a pixel, a line dims instead of breaking up.
+    return line * min(widthPixels, 1.0) *
+           smoothstep(kGridMinSpacingPixels, 2.0 * kGridMinSpacingPixels, spacingPixels);
+}
+
+// Latitude and longitude lines at point p on the globe, in UI pixels scaled
+// by uiScale. Must run in uniform control flow for the derivatives.
+vec3 Graticule(const vec3 p, const float uiScale) {
+    const float cell = radians(kGraticuleDegrees);
+    const float lat = asin(clamp(p.y, -1.0, 1.0));
+    const float lon = atan(p.x, p.z);
+    // atan jumps at the antimeridian, where its derivative would spike. The
+    // same angle measured from the far side jumps at 0 degrees instead, so
+    // the smaller of the two derivatives is right everywhere.
+    const float lonFootprint = min(fwidth(lon), fwidth(atan(-p.x, -p.z))) / cell;
+    const float latFootprint = fwidth(lat) / cell;
+    const float width = kGraticuleWidthPixels * uiScale;
+    const float parallels = GridLines(lat / cell, latFootprint, width) *
+                            (abs(lat) < 0.5 * cell ? kGraticuleMajorBoost : 1.0);
+    const float meridians = GridLines(lon / cell, lonFootprint, width) *
+                            (abs(lon) < 0.5 * cell ? kGraticuleMajorBoost : 1.0);
+    return kGraticuleColor * kGraticuleIntensity * max(parallels, meridians);
+}
+
+// Lines on one pair of faces of the sky cube, those facing +-axis. Every face
+// is evaluated for every pixel so the derivatives stay smooth across the cube
+// edges; the caller keeps the face the ray actually meets.
+float RoomFace(const vec2 across, const float along, const float widthPixels) {
+    const vec2 uv = across / along * kRoomCellsPerHalfFace;
+    const vec2 footprint = fwidth(uv);
+    return max(GridLines(uv.x, footprint.x, widthPixels), GridLines(uv.y, footprint.y, widthPixels));
+}
+
+vec3 Room(const vec3 d, const float uiScale) {
+    const float width = uiScale;
+    const float faceX = RoomFace(d.yz, d.x, width);
+    const float faceY = RoomFace(d.xz, d.y, width);
+    const float faceZ = RoomFace(d.xy, d.z, width);
+    const vec3 a = abs(d);
+    const float lines = a.x >= a.y && a.x >= a.z ? faceX : (a.y >= a.z ? faceY : faceZ);
+    return kRoomColor * kRoomIntensity * lines;
 }
 
 // Probability that a standard normal variable is below x. Logistic fit with
@@ -127,18 +197,20 @@ void main() {
     // Fade the limb over about one pixel instead of cutting it hard.
     const float limbWidth = max(fwidth(discriminant), 0.000001);
     const float alpha = b < 0.0 ? smoothstep(0.0, limbWidth, discriminant) : 0.0;
-    vec3 background = vec3(0.0);
+    // Grid lines first: their derivatives need every pixel of the quad.
+    const vec3 globePoint = o + d * (-b - sqrt(max(discriminant, 0.0)));
+    const vec3 graticule = Graticule(normalize(globePoint), pc.line.w);
+    vec3 background = Room(d, pc.line.w);
     if (alpha < 1.0) {
         // Star sizes are in UI pixels, so they look the same at any display scaling.
-        background = StarField(d, pixelAngle * pc.line.w);
+        background += StarField(d, pixelAngle * pc.line.w);
     }
     // Both glow paths are evaluated so limb pixels blend them smoothly.
     // Each path is lit by the Sun at its densest point: the closest approach
     // for rays passing the globe, the surface hit for rays striking it.
     const vec3 skyPoint = o + d * max(-b, 0.0);
-    const vec3 globePoint = o + d * (-b - sqrt(max(discriminant, 0.0)));
     const vec3 sky = background + Glow(GlowDepth(o, d, b, false)) * Sunlight(skyPoint);
-    const vec3 globe = kSphereColor + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
+    const vec3 globe = kSphereColor + graticule + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
     // Composite here so the globe occludes stars even with MAX blending.
     outColor = vec4(mix(sky, globe, alpha), 1.0);
 }

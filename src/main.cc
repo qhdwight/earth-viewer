@@ -77,6 +77,9 @@ constexpr F32 kMinLineWidthPixels = 1.5f;
 // Ribbons are drawn this much wider than the line so the fragment shader
 // can fade the true edge across pixels whose centres lie just outside it.
 constexpr F32 kLineAaPaddingPixels = 1.0f;
+// And this much wider again, in UI pixels, for the glow around borders and
+// links. Matches kLineGlowPixels in earth.frag and kLinkGlowPixels in link.frag.
+constexpr F32 kLineGlowPixels = 4.0f;
 // Only meaningful for line topologies; must stay 1 without the wideLines feature.
 constexpr F32 kRasterLineWidth = 1.0f;
 constexpr U64 kWaitForever = ~0ull;
@@ -142,7 +145,7 @@ struct PushConstants {
     F32 cameraPos[4];
     // x: half line width in world units.
     // y: minimum half line width in world units per unit of view depth.
-    // z: anti-aliasing padding in world units per unit of view depth.
+    // z: anti-aliasing and glow padding in world units per unit of view depth.
     // w: UI scale, for screen-space sizes in sphere.frag.
     F32 line[4];
     // xyz: unit vector toward the Sun, for the glow in sphere.frag.
@@ -910,7 +913,7 @@ static PushConstants BuildPushConstants() {
     // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
     const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
     const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * uiScale * unitsPerPixelPerDepth;
-    const F32 aaPaddingPerDepth = kLineAaPaddingPixels * unitsPerPixelPerDepth;
+    const F32 aaPaddingPerDepth = (kLineAaPaddingPixels + kLineGlowPixels * uiScale) * unitsPerPixelPerDepth;
     const Vec3 sun = SunDirection(frameUtcTicks);
     return {
         .viewProj = Multiply(Perspective(kFovScale, aspect, kNearPlane),

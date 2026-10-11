@@ -30,9 +30,11 @@ const vec2 kCorners[kVerticesPerSprite] = vec2[kVerticesPerSprite](
 // Dots never shrink below this on screen, in UI pixels, like the border lines.
 const float kMinRadiusPixels = 2.0;
 const float kHaloRadii = 3.0; // must match satellite.frag
-const vec3 kSunlitColor = vec3(1.0, 0.72, 0.28);
-const vec3 kShadowColor = vec3(0.22, 0.28, 0.45);
-const vec3 kStationColor = vec3(0.35, 1.0, 0.45);
+// Sunlit satellites glow mint, those in Earth's shadow dim blue, and ground
+// stations, where the laser links start, white.
+const vec3 kSunlitColor = vec3(0.5, 1.0, 0.85);
+const vec3 kShadowColor = vec3(0.08, 0.2, 0.45);
+const vec3 kStationColor = vec3(1.0);
 // Ground stations sit exactly on the surface, at t = 1 below; the margin
 // keeps them from flickering in and out.
 const float kOcclusionMargin = 0.001;

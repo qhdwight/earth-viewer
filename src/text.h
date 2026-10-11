@@ -299,7 +299,8 @@ static bool AppendSolidQuad(const F32 x, const F32 y, const F32 width, const F32
 // (x, y) is the top left of the first line. Returns false on batch
 // exhaustion. Unsupported bytes use a '?' glyph.
 static bool AppendText(const char *string, const F32 x, const F32 y, const F32 scale = 1.0f) {
-    constexpr F32 kWhite[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    // Phosphor green, like the terminals of the era.
+    constexpr F32 kTextColor[4] = {0.45f, 1.0f, 0.55f, 1.0f};
     const F32 pixelsPerEm = textRenderer.pixelsPerEm * scale;
     F32 penX = x;
     F32 lineTop = y;
@@ -312,7 +313,7 @@ static bool AppendText(const char *string, const F32 x, const F32 y, const F32 s
         }
         const SlugGlyph &glyph = slugFont.glyphs[GlyphIndex(character)];
         const F32 baseline = RoundPixels(lineTop + slugFont.ascent * pixelsPerEm);
-        if (glyph.curveCount > 0 && !AppendGlyph(glyph, penX, baseline, pixelsPerEm, kWhite)) {
+        if (glyph.curveCount > 0 && !AppendGlyph(glyph, penX, baseline, pixelsPerEm, kTextColor)) {
             return false;
         }
         penX += AdvancePixels(glyph, pixelsPerEm);
@@ -349,8 +350,15 @@ static F32 TextWidth(const char *string) {
 constexpr U32 kClockLines = 4;
 
 static void AppendPanel(const F32 x, const F32 y, const F32 width, const F32 height) {
-    constexpr F32 kPanelColor[4] = {0.0f, 0.0f, 0.0f, 0.9f};
+    constexpr F32 kPanelColor[4] = {0.0f, 0.01f, 0.015f, 0.85f};
+    constexpr F32 kOutlineColor[4] = {0.05f, 0.45f, 0.6f, 1.0f};
     AppendSolidQuad(x, y, width, height, kPanelColor);
+    // A thin outline, top, bottom, left, right, inside the panel's bounds.
+    const F32 t = UiPixels(1.0f);
+    AppendSolidQuad(x, y, width, t, kOutlineColor);
+    AppendSolidQuad(x, y + height - t, width, t, kOutlineColor);
+    AppendSolidQuad(x, y + t, t, height - 2.0f * t, kOutlineColor);
+    AppendSolidQuad(x + width - t, y + t, t, height - 2.0f * t, kOutlineColor);
 }
 
 static void AppendClock() {

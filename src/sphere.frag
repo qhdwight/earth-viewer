@@ -28,11 +28,26 @@ const float kGraticuleWidthPixels = 1.0;
 // not merge into a solid cap near the poles or at the limb.
 const float kGridMinSpacingPixels = 5.0;
 
-// The sky is the inside of a gridded cube around the camera, like a room
-// drawn in vector graphics. It turns with the view but never gets closer.
-const float kRoomCellsPerHalfFace = 8.0;
-const vec3 kRoomColor = vec3(0.02, 0.15, 0.35);
-const float kRoomIntensity = 0.15;
+// The Sun, drawn like a bright star on film: a small core that burns out to
+// white, a warm halo, and six diffraction spikes fixed to the screen. Sizes
+// are in UI pixels, so it looks the same at any zoom or display scaling.
+const float kSunCoreRadius = 6.0;
+const vec3 kSunCoreColor = vec3(1.0, 0.95, 0.8) * 6.0; // past 1, it clips to white
+const float kSunHaloScale = 7.0;
+const vec3 kSunHaloColor = vec3(1.0, 0.55, 0.12) * 2.5;
+const float kSunGlareScale = 44.0;
+const vec3 kSunGlareColor = vec3(1.0, 0.55, 0.2) * 0.05;
+const int kSunSpikePairs = 3; // six rays, 60 degrees apart
+const float kSunSpikeLength = 14.0; // e-folding length
+const float kSunSpikeWidth = 2.4; // at the core, widening outward
+const float kSunSpikeTaper = 0.08;
+const vec3 kSunSpikeColor = vec3(1.0, 0.65, 0.25) * 1.6;
+// Beyond this the Sun adds nothing visible, so the work is skipped.
+const float kSunReach = 300.0;
+
+// The globe's day side is faintly lit, so it reads as a crescent against the
+// Sun. Kept dim so the lines drawn on it stay legible.
+const vec3 kDayColor = vec3(0.004, 0.022, 0.014);
 
 // The glow is a thin haze whose density falls off exponentially with height
 // above the surface. Its size is physical, in Earth radii, so it scales with
@@ -118,23 +133,22 @@ vec3 Graticule(const vec3 p, const float uiScale) {
     return kGraticuleColor * kGraticuleIntensity * max(parallels, meridians);
 }
 
-// Lines on one pair of faces of the sky cube, those facing +-axis. Every face
-// is evaluated for every pixel so the derivatives stay smooth across the cube
-// edges; the caller keeps the face the ray actually meets.
-float RoomFace(const vec2 across, const float along, const float widthPixels) {
-    const vec2 uv = across / along * kRoomCellsPerHalfFace;
-    const vec2 footprint = fwidth(uv);
-    return max(GridLines(uv.x, footprint.x, widthPixels), GridLines(uv.y, footprint.y, widthPixels));
-}
-
-vec3 Room(const vec3 d, const float uiScale) {
-    const float width = uiScale;
-    const float faceX = RoomFace(d.yz, d.x, width);
-    const float faceY = RoomFace(d.xz, d.y, width);
-    const float faceZ = RoomFace(d.xy, d.z, width);
-    const vec3 a = abs(d);
-    const float lines = a.x >= a.y && a.x >= a.z ? faceX : (a.y >= a.z ? faceY : faceZ);
-    return kRoomColor * kRoomIntensity * lines;
+// The Sun at screen offset (x, y) in UI pixels from its centre.
+vec3 Sun(const vec2 offset) {
+    const float r = length(offset);
+    const float core = 1.0 - smoothstep(kSunCoreRadius - 1.0, kSunCoreRadius + 1.0, r);
+    vec3 color = kSunCoreColor * core + kSunHaloColor * exp(-r / kSunHaloScale) +
+                 kSunGlareColor * exp(-r / kSunGlareScale);
+    // Each spike pair is a line through the centre; a ray fades along its
+    // length and blurs across it as it widens.
+    const float width = kSunSpikeWidth + kSunSpikeTaper * r;
+    float spikes = 0.0;
+    for (int i = 0; i < kSunSpikePairs; ++i) {
+        const float angle = float(i) * kPi / float(kSunSpikePairs);
+        const float across = dot(offset, vec2(-sin(angle), cos(angle)));
+        spikes += exp(-across * across / (width * width));
+    }
+    return color + kSunSpikeColor * spikes * exp(-r / kSunSpikeLength);
 }
 
 // Probability that a standard normal variable is below x. Logistic fit with
@@ -191,7 +205,9 @@ void main() {
     const vec3 o = pc.cameraPos.xyz;
     const vec3 d = normalize(rayDir);
     // Derivatives must be evaluated before branching around the opaque globe.
-    const float pixelAngle = max(max(length(dFdx(d)), length(dFdy(d))), 0.000001);
+    const vec3 dx = dFdx(d);
+    const vec3 dy = dFdy(d);
+    const float pixelAngle = max(max(length(dx), length(dy)), 0.000001);
     const float b = dot(o, d);
     const float discriminant = b * b - (dot(o, o) - 1.0);
     // Fade the limb over about one pixel instead of cutting it hard.
@@ -200,17 +216,28 @@ void main() {
     // Grid lines first: their derivatives need every pixel of the quad.
     const vec3 globePoint = o + d * (-b - sqrt(max(discriminant, 0.0)));
     const vec3 graticule = Graticule(normalize(globePoint), pc.line.w);
-    vec3 background = Room(d, pc.line.w);
+    vec3 background = vec3(0.0);
     if (alpha < 1.0) {
         // Star sizes are in UI pixels, so they look the same at any display scaling.
         background += StarField(d, pixelAngle * pc.line.w);
+        // The Sun's screen offset from this pixel: project the direction
+        // difference onto the world-space steps of one pixel right and down.
+        const vec3 sun = pc.sunDirection.xyz;
+        const vec3 toPixel = d - sun;
+        const vec2 offset = vec2(dot(toPixel, dx) / max(dot(dx, dx), 1.0e-12),
+                                 dot(toPixel, dy) / max(dot(dy, dy), 1.0e-12)) / pc.line.w;
+        if (dot(d, sun) > 0.0 && length(offset) < kSunReach) {
+            background += Sun(offset);
+        }
     }
     // Both glow paths are evaluated so limb pixels blend them smoothly.
     // Each path is lit by the Sun at its densest point: the closest approach
     // for rays passing the globe, the surface hit for rays striking it.
     const vec3 skyPoint = o + d * max(-b, 0.0);
     const vec3 sky = background + Glow(GlowDepth(o, d, b, false)) * Sunlight(skyPoint);
-    const vec3 globe = kSphereColor + graticule + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
+    const vec3 normal = normalize(globePoint);
+    const float daylight = smoothstep(-0.05, 0.3, dot(normal, pc.sunDirection.xyz));
+    const vec3 globe = kSphereColor + kDayColor * daylight + graticule + Glow(GlowDepth(o, d, b, true)) * Sunlight(globePoint);
     // Composite here so the globe occludes stars even with MAX blending.
     outColor = vec4(mix(sky, globe, alpha), 1.0);
 }

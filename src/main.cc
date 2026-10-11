@@ -189,6 +189,9 @@ struct Input {
     POINT lastMouse;
     I32 mouseDx;
     I32 mouseDy;
+    // Toggled with H. Hidden satellites keep propagating, so they reappear in
+    // their real-time positions.
+    bool hideSatellites;
 };
 
 struct Renderer {
@@ -905,7 +908,7 @@ static bool DrawFrame() {
 
     // Links share the scene layout, with their own widths and endpoints. They
     // are drawn after the borders with source-over blending, so they sit on top.
-    if (linkCount > 0) {
+    if (!input.hideSatellites && linkCount > 0) {
         const F32 unitsPerPixelPerDepth = 2.0f / (static_cast<F32>(r.extent.height) * kFovScale);
         PushConstants linkPush = push;
         linkPush.line[0] = 0.5f * kLinkWidthWorld;
@@ -917,11 +920,13 @@ static bool DrawFrame() {
         vkCmdDraw(r.cmd, kVerticesPerSegment * linkCount, kInstanceCount, 0, 0);
     }
 
-    const SatellitePush satellitePush = BuildSatellitePush(push);
-    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.satellitePipeline);
-    vkCmdPushConstants(r.cmd, r.satelliteLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(satellitePush), &satellitePush);
-    vkCmdDraw(r.cmd, kVerticesPerSprite * kMarkerCount, kInstanceCount, 0, 0);
+    if (!input.hideSatellites) {
+        const SatellitePush satellitePush = BuildSatellitePush(push);
+        vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.satellitePipeline);
+        vkCmdPushConstants(r.cmd, r.satelliteLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(satellitePush), &satellitePush);
+        vkCmdDraw(r.cmd, kVerticesPerSprite * kMarkerCount, kInstanceCount, 0, 0);
+    }
 
     DrawOverlay();
 
@@ -998,6 +1003,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, const UINT msg, const WPARAM wparam, 
         case WM_KEYDOWN: {
             if (wparam == VK_ESCAPE) {
                 DestroyWindow(hwnd);
+            }
+            // Bit 30 of lparam is set for auto-repeat, so holding H toggles once.
+            const bool repeat = (lparam & (1 << 30)) != 0;
+            if (wparam == 'H' && !repeat) {
+                input.hideSatellites = !input.hideSatellites;
             }
             input.keyDown[wparam & (kMaxKeys - 1)] = true;
             return 0;

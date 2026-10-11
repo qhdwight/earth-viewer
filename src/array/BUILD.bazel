@@ -2,22 +2,44 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 # The routines are hand-written AVX2 assembly: MASM for Windows (assembled by
 # ml64 through the MSVC toolchain) and NASM syntax for Linux. The Linux
-# sources need `nasm` on PATH; they are not GAS-compatible.
+# sources need `nasm` on PATH; they are not GAS-compatible. Every other target,
+# such as Apple silicon, compiles fast_array_ops_fallback.cc instead: plain C++
+# with the same symbols and the same results.
 LINUX_ASM = glob(["Linux/*.s"])
+
+config_setting(
+    name = "windows_x86_64",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
 
 genrule(
     name = "linux_objects",
     srcs = LINUX_ASM,
     outs = [src.replace("Linux/", "").replace(".s", ".o") for src in LINUX_ASM],
     cmd = "for f in $(SRCS); do nasm -f elf64 $$f -o $(RULEDIR)/$$(basename $$f .s).o; done",
-    target_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
 )
 
 cc_library(
     name = "array",
     srcs = select({
-        "@platforms//os:windows": glob(["Windows/*.asm"]),
-        "//conditions:default": [":linux_objects"],
+        ":windows_x86_64": glob(["Windows/*.asm"]),
+        ":linux_x86_64": [":linux_objects"],
+        "//conditions:default": ["fast_array_ops_fallback.cc"],
     }),
     hdrs = ["fast_array_ops.h"],
     visibility = ["//visibility:public"],

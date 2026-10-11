@@ -18,6 +18,7 @@
 
 #include "src/core.h"
 #include "src/platform.h"
+#include "src/array/fast_array_ops.h"
 #include "src/bit/bitarray.h"
 #include "src/borders.h"
 #include "src/earth_frag.h"
@@ -332,15 +333,6 @@ static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted
         }
     }
     Die("finding a memory type", wanted);
-}
-
-static U64 FastFind64(void *p, const U64 n, const U64 v) {
-    for (U64 i = 0; i < n; ++i) {
-        if (static_cast<U64 *>(p)[i] == v) {
-            return i;
-        }
-    }
-    return static_cast<U64>(-1);
 }
 
 static void CreateSwapchain() {

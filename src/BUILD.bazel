@@ -159,6 +159,7 @@ cc_binary(
         ":j2",
         ":math",
         ":platform",
+        "//src/array",
         "//src/bit",
         "@vulkan",
     ] + select({

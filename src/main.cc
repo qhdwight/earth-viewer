@@ -41,12 +41,12 @@
 #include <cstdio>
 
 [[noreturn]] void Die(char const *what, const I64 code) {
-    printf("%s failed (%lld)\n", what, code);
+    printf("%s failed (%ld)\n", what, code);
     fflush(stdout);
 #if defined(_WIN32)
     ExitProcess(1);
 #else
-    _exit(1);
+    exit(1);
 #endif
 }
 

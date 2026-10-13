@@ -378,7 +378,7 @@ static void AppendClock() {
     snprintf(label, sizeof(label),
              "%s  %04d-%02u-%02u %02u:%02u:%02u\n"
              "UTC  %04d-%02u-%02u %02u:%02u:%02u\n"
-             "GPS  %lld (week %lld, %lld s)\n"
+             "GPS  %ld (week %ld, %ld s)\n"
              "RATE %s",
              daylight ? "PDT" : "PST",
              pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute, pacific.second,

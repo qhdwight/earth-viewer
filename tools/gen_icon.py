@@ -7,8 +7,9 @@ embedded whole. On Windows the window and taskbar never show the icon larger
 than 64 pixels, and platform_win32.h turns those PNG bytes into icons with
 CreateIconFromResourceEx, so no resource compiler is involved. The macOS Dock
 shows it at up to 256 points, 512 pixels on a Retina display, so
-platform_macos.mm uses the 512 pixel one. Each build only links the sizes it
-references.
+platform_macos.mm uses the 512 pixel one. X11 takes window icons as raw pixels
+rather than PNG, so platform_linux.h uses a 64 pixel ARGB copy. Each build only
+links the sizes it references.
 """
 
 import io
@@ -17,7 +18,9 @@ import sys
 from PIL import Image
 
 SIZES = (32, 64, 512)
+ARGB_SIZE = 64
 BYTES_PER_LINE = 20
+PIXELS_PER_LINE = 8
 
 
 def main(src, dst):
@@ -40,6 +43,18 @@ def main(src, dst):
         lines.append("};")
         lines.append("")
         print(f"{size}x{size}: {len(data)} bytes")
+    rgba = logo.resize((ARGB_SIZE, ARGB_SIZE), Image.LANCZOS).tobytes()
+    pixels = [
+        rgba[i + 3] << 24 | rgba[i] << 16 | rgba[i + 1] << 8 | rgba[i + 2]
+        for i in range(0, len(rgba), 4)
+    ]
+    lines.append("// Unpremultiplied 0xAARRGGBB pixels, rows top to bottom.")
+    lines.append(f"inline constexpr U32 kIconArgbSize = {ARGB_SIZE};")
+    lines.append(f"inline constexpr U32 kIconArgb{ARGB_SIZE}[{len(pixels)}] = {{")
+    for i in range(0, len(pixels), PIXELS_PER_LINE):
+        lines.append("    " + " ".join(f"0x{p:08X}," for p in pixels[i:i + PIXELS_PER_LINE]))
+    lines.append("};")
+    lines.append("")
     with open(dst, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))
 

@@ -1,7 +1,7 @@
 #pragma once
 
 // Included after the platform headers: GDI on Windows and Core Text on macOS
-// supply the glyph outlines.
+// supply the glyph outlines, and on Linux they are read from a TrueType file.
 //
 // Font data for the Slug algorithm by Eric Lengyel, "GPU-Centered Font
 // Rendering Directly from Glyph Outlines", JCGT 2017, which text.frag renders.
@@ -434,6 +434,347 @@ inline void BuildSlugFont(SlugFont &font) {
     }
     font.capHeight = font.glyphs['H' - kSlugFirstChar].maxY;
     CFRelease(handle);
+}
+
+#elif defined(__linux__)
+
+#include <cstdio>
+
+// Linux has no system font API without third-party libraries, so the glyphs
+// come straight from a TrueType file. Monospace fonts that distributions
+// commonly install, tried in order.
+inline constexpr char const *kSlugFontPaths[] = {
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/TTF/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+};
+inline constexpr U32 kSlugMaxFontBytes = 1u << 22;
+inline constexpr U32 kSlugMaxGlyphPoints = 1024;
+inline constexpr U32 kSlugMaxComponentDepth = 4;
+inline constexpr U32 kSlugTrueTypeVersion = 0x00010000;
+inline constexpr U32 kSlugAppleTrueTypeVersion = 0x74727565; // 'true'
+
+// Simple glyph point flags.
+inline constexpr U8 kSlugOnCurve = 0x01;
+inline constexpr U8 kSlugXShort = 0x02;
+inline constexpr U8 kSlugYShort = 0x04;
+inline constexpr U8 kSlugRepeat = 0x08;
+inline constexpr U8 kSlugXSameOrPositive = 0x10;
+inline constexpr U8 kSlugYSameOrPositive = 0x20;
+// Composite glyph component flags.
+inline constexpr U32 kSlugArgsAreWords = 0x0001;
+inline constexpr U32 kSlugArgsAreOffsets = 0x0002;
+inline constexpr U32 kSlugHaveScale = 0x0008;
+inline constexpr U32 kSlugMoreComponents = 0x0020;
+inline constexpr U32 kSlugHaveXYScale = 0x0040;
+inline constexpr U32 kSlugHaveTwoByTwo = 0x0080;
+
+// Byte offsets of the tables a glyph needs, into the font file.
+struct SlugTrueType {
+    const U8 *file;
+    U32 glyf, loca, hmtx, cmap; // cmap is the format 4 subtable
+    U32 hMetricCount;
+    bool longLoca;
+};
+
+// Font units to em, as x' = xx x + yx y + dx and y' = xy x + yy y + dy.
+struct SlugTransform {
+    F32 xx, xy, yx, yy, dx, dy;
+};
+
+inline U32 SlugReadU16(const U8 *const p) { return static_cast<U32>(p[0]) << 8 | p[1]; }
+inline I32 SlugReadI16(const U8 *const p) { return static_cast<I16>(SlugReadU16(p)); }
+inline U32 SlugReadU32(const U8 *const p) { return SlugReadU16(p) << 16 | SlugReadU16(p + 2); }
+
+inline U32 SlugFindTable(const U8 *const file, const U32 size, char const *const tag) {
+    const U32 tableCount = SlugReadU16(file + 4);
+    if (12 + 16 * tableCount > size) {
+        Die("reading the font's table directory", tableCount);
+    }
+    for (U32 i = 0; i < tableCount; ++i) {
+        const U8 *const record = file + 12 + 16 * i;
+        if (record[0] == tag[0] && record[1] == tag[1] && record[2] == tag[2] && record[3] == tag[3]) {
+            const U32 offset = SlugReadU32(record + 8);
+            if (offset > size || SlugReadU32(record + 12) > size - offset) {
+                Die("reading a font table", i);
+            }
+            return offset;
+        }
+    }
+    Die("finding a font table", SlugReadU32(reinterpret_cast<const U8 *>(tag)));
+}
+
+// The Unicode BMP mapping, which covers ASCII.
+inline U32 SlugFindCharacterMap(const U8 *const file, const U32 cmap) {
+    const U32 recordCount = SlugReadU16(file + cmap + 2);
+    for (U32 i = 0; i < recordCount; ++i) {
+        const U8 *const record = file + cmap + 4 + 8 * i;
+        const U32 platform = SlugReadU16(record);
+        const U32 encoding = SlugReadU16(record + 2);
+        const U32 subtable = cmap + SlugReadU32(record + 4);
+        const bool unicode = platform == 0 || (platform == 3 && encoding == 1);
+        if (unicode && SlugReadU16(file + subtable) == 4) {
+            return subtable;
+        }
+    }
+    Die("finding a Unicode character map", recordCount);
+}
+
+// Format 4 maps sorted ranges of characters, each by a delta or through an
+// array of glyph indices.
+inline U32 SlugGlyphIndex(const SlugTrueType &font, const U32 character) {
+    const U8 *const subtable = font.file + font.cmap;
+    const U32 segmentBytes = SlugReadU16(subtable + 6);
+    const U8 *const endCodes = subtable + 14;
+    const U8 *const startCodes = endCodes + segmentBytes + 2;
+    const U8 *const deltas = startCodes + segmentBytes;
+    const U8 *const rangeOffsets = deltas + segmentBytes;
+    for (U32 i = 0; i < segmentBytes; i += 2) {
+        if (SlugReadU16(endCodes + i) < character) {
+            continue;
+        }
+        const U32 start = SlugReadU16(startCodes + i);
+        if (start > character) {
+            return 0;
+        }
+        const U32 delta = SlugReadU16(deltas + i);
+        const U32 rangeOffset = SlugReadU16(rangeOffsets + i);
+        if (rangeOffset == 0) {
+            return (character + delta) & 0xFFFF;
+        }
+        const U32 glyph = SlugReadU16(rangeOffsets + i + rangeOffset + 2 * (character - start));
+        return glyph == 0 ? 0 : (glyph + delta) & 0xFFFF;
+    }
+    return 0;
+}
+
+inline U32 SlugGlyphOffset(const SlugTrueType &font, const U32 glyph) {
+    const U8 *const loca = font.file + font.loca;
+    return font.longLoca ? SlugReadU32(loca + 4 * glyph) : 2 * SlugReadU16(loca + 2 * glyph);
+}
+
+// One closed contour of on-curve and off-curve points. Between two
+// consecutive off-curve points the on-curve point is implied at their
+// midpoint, so the contour starts on a real on-curve point at either end, or
+// else on the implied one between the ends.
+inline void SlugDecodeContour(SlugFont &font, SlugGlyphBuilder &builder, const F32 *const xs, const F32 *const ys,
+                              const U8 *const flags, const U32 first, const U32 last) {
+    const bool firstOn = (flags[first] & kSlugOnCurve) != 0;
+    const bool lastOn = (flags[last] & kSlugOnCurve) != 0;
+    const U32 start = firstOn ? first : last;
+    const F32 startX = firstOn || lastOn ? xs[start] : 0.5f * (xs[first] + xs[last]);
+    const F32 startY = firstOn || lastOn ? ys[start] : 0.5f * (ys[first] + ys[last]);
+    const U32 begin = firstOn ? first + 1 : first;
+    const U32 end = !firstOn && lastOn ? last : last + 1;
+    SlugBeginContour(font, builder, startX, startY);
+    bool pending = false;
+    F32 controlX = 0.0f;
+    F32 controlY = 0.0f;
+    for (U32 i = begin; i < end; ++i) {
+        if ((flags[i] & kSlugOnCurve) != 0) {
+            if (pending) {
+                SlugAddCurve(font, builder, controlX, controlY, xs[i], ys[i]);
+            } else {
+                SlugAddLine(font, builder, xs[i], ys[i]);
+            }
+            pending = false;
+        } else {
+            if (pending) {
+                SlugAddCurve(font, builder, controlX, controlY, 0.5f * (controlX + xs[i]),
+                             0.5f * (controlY + ys[i]));
+            }
+            controlX = xs[i];
+            controlY = ys[i];
+            pending = true;
+        }
+    }
+    if (pending) {
+        SlugAddCurve(font, builder, controlX, controlY, startX, startY);
+    } else if (builder.penX != startX || builder.penY != startY) {
+        SlugAddLine(font, builder, startX, startY);
+    }
+    SlugEndContour(font);
+}
+
+// Adds a glyph's contours. Composite glyphs place other glyphs, each under
+// its own transform.
+inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const SlugTrueType &trueType,
+                            const U32 glyph, const SlugTransform &transform, const U32 depth) {
+    const U32 offset = SlugGlyphOffset(trueType, glyph);
+    if (offset == SlugGlyphOffset(trueType, glyph + 1)) {
+        return; // blank, such as space
+    }
+    const U8 *const data = trueType.file + trueType.glyf + offset;
+    const I32 contourCount = SlugReadI16(data);
+    if (contourCount < 0) {
+        if (depth == kSlugMaxComponentDepth) {
+            Die("reading a composite glyph (nested too deep)", glyph);
+        }
+        const U8 *cursor = data + 10;
+        U32 flags = kSlugMoreComponents;
+        while ((flags & kSlugMoreComponents) != 0) {
+            flags = SlugReadU16(cursor);
+            const U32 component = SlugReadU16(cursor + 2);
+            cursor += 4;
+            if ((flags & kSlugArgsAreOffsets) == 0) {
+                Die("reading a composite glyph (point-matched components are unsupported)", glyph);
+            }
+            const bool words = (flags & kSlugArgsAreWords) != 0;
+            const F32 dx = static_cast<F32>(words ? SlugReadI16(cursor) : static_cast<I8>(cursor[0]));
+            const F32 dy = static_cast<F32>(words ? SlugReadI16(cursor + 2) : static_cast<I8>(cursor[1]));
+            cursor += words ? 4 : 2;
+            // Scales are 2.14 fixed point.
+            constexpr F32 kUnitsPerScale = 1.0f / 16384.0f;
+            F32 xx = 1.0f, xy = 0.0f, yx = 0.0f, yy = 1.0f;
+            if ((flags & kSlugHaveScale) != 0) {
+                xx = yy = static_cast<F32>(SlugReadI16(cursor)) * kUnitsPerScale;
+                cursor += 2;
+            } else if ((flags & kSlugHaveXYScale) != 0) {
+                xx = static_cast<F32>(SlugReadI16(cursor)) * kUnitsPerScale;
+                yy = static_cast<F32>(SlugReadI16(cursor + 2)) * kUnitsPerScale;
+                cursor += 4;
+            } else if ((flags & kSlugHaveTwoByTwo) != 0) {
+                xx = static_cast<F32>(SlugReadI16(cursor)) * kUnitsPerScale;
+                xy = static_cast<F32>(SlugReadI16(cursor + 2)) * kUnitsPerScale;
+                yx = static_cast<F32>(SlugReadI16(cursor + 4)) * kUnitsPerScale;
+                yy = static_cast<F32>(SlugReadI16(cursor + 6)) * kUnitsPerScale;
+                cursor += 8;
+            }
+            const SlugTransform &t = transform;
+            const SlugTransform combined = {
+                .xx = t.xx * xx + t.yx * xy,
+                .xy = t.xy * xx + t.yy * xy,
+                .yx = t.xx * yx + t.yx * yy,
+                .yy = t.xy * yx + t.yy * yy,
+                .dx = t.xx * dx + t.yx * dy + t.dx,
+                .dy = t.xy * dx + t.yy * dy + t.dy,
+            };
+            SlugDecodeGlyph(font, builder, trueType, component, combined, depth + 1);
+        }
+        return;
+    }
+    if (contourCount == 0) {
+        return;
+    }
+
+    const U8 *const endPoints = data + 10;
+    const U32 pointCount = SlugReadU16(endPoints + 2 * (contourCount - 1)) + 1;
+    if (pointCount > kSlugMaxGlyphPoints) {
+        Die("reading a glyph (too many points)", pointCount);
+    }
+    const U8 *cursor = endPoints + 2 * contourCount;
+    cursor += 2 + SlugReadU16(cursor); // hinting instructions
+    static U8 flags[kSlugMaxGlyphPoints];
+    for (U32 i = 0; i < pointCount;) {
+        const U8 flag = *cursor++;
+        const U32 repeats = (flag & kSlugRepeat) != 0 ? *cursor++ : 0;
+        for (U32 r = 0; r <= repeats && i < pointCount; ++r) {
+            flags[i++] = flag;
+        }
+    }
+    // Coordinates are deltas from the previous point: a byte with the sign in
+    // the flags, the same as before, or a signed word.
+    static I32 unitsX[kSlugMaxGlyphPoints];
+    static I32 unitsY[kSlugMaxGlyphPoints];
+    I32 x = 0;
+    for (U32 i = 0; i < pointCount; ++i) {
+        if ((flags[i] & kSlugXShort) != 0) {
+            x += (flags[i] & kSlugXSameOrPositive) != 0 ? *cursor : -static_cast<I32>(*cursor);
+            cursor += 1;
+        } else if ((flags[i] & kSlugXSameOrPositive) == 0) {
+            x += SlugReadI16(cursor);
+            cursor += 2;
+        }
+        unitsX[i] = x;
+    }
+    I32 y = 0;
+    for (U32 i = 0; i < pointCount; ++i) {
+        if ((flags[i] & kSlugYShort) != 0) {
+            y += (flags[i] & kSlugYSameOrPositive) != 0 ? *cursor : -static_cast<I32>(*cursor);
+            cursor += 1;
+        } else if ((flags[i] & kSlugYSameOrPositive) == 0) {
+            y += SlugReadI16(cursor);
+            cursor += 2;
+        }
+        unitsY[i] = y;
+    }
+    static F32 xs[kSlugMaxGlyphPoints];
+    static F32 ys[kSlugMaxGlyphPoints];
+    for (U32 i = 0; i < pointCount; ++i) {
+        const F32 fx = static_cast<F32>(unitsX[i]);
+        const F32 fy = static_cast<F32>(unitsY[i]);
+        xs[i] = transform.xx * fx + transform.yx * fy + transform.dx;
+        ys[i] = transform.xy * fx + transform.yy * fy + transform.dy;
+    }
+
+    U32 first = 0;
+    for (I32 c = 0; c < contourCount; ++c) {
+        const U32 last = SlugReadU16(endPoints + 2 * c);
+        if (last < first || last >= pointCount) {
+            Die("reading a glyph contour", c);
+        }
+        SlugDecodeContour(font, builder, xs, ys, flags, first, last);
+        first = last + 1;
+    }
+}
+
+// Extracts printable ASCII from the first font found as unhinted TrueType
+// outlines in em units, with the baseline at y = 0 and y pointing up.
+inline void BuildSlugFont(SlugFont &font) {
+    static U8 file[kSlugMaxFontBytes];
+    FILE *stream = nullptr;
+    for (U32 i = 0; i < Count(kSlugFontPaths) && !stream; ++i) {
+        stream = fopen(kSlugFontPaths[i], "rb");
+    }
+    if (!stream) {
+        Die("opening a monospace TrueType font (install DejaVu Sans Mono)", 0);
+    }
+    const U64 size = fread(file, 1, sizeof(file), stream);
+    fclose(stream);
+    if (size < 12 || size == sizeof(file)) {
+        Die("reading the font file", static_cast<I64>(size));
+    }
+    const U32 version = SlugReadU32(file);
+    if (version != kSlugTrueTypeVersion && version != kSlugAppleTrueTypeVersion) {
+        Die("reading the font file (only TrueType outlines are supported)", version);
+    }
+
+    const U32 fileSize = static_cast<U32>(size);
+    const U32 head = SlugFindTable(file, fileSize, "head");
+    const U32 hhea = SlugFindTable(file, fileSize, "hhea");
+    const SlugTrueType trueType = {
+        .file = file,
+        .glyf = SlugFindTable(file, fileSize, "glyf"),
+        .loca = SlugFindTable(file, fileSize, "loca"),
+        .hmtx = SlugFindTable(file, fileSize, "hmtx"),
+        .cmap = SlugFindCharacterMap(file, SlugFindTable(file, fileSize, "cmap")),
+        .hMetricCount = SlugReadU16(file + hhea + 34),
+        .longLoca = SlugReadI16(file + head + 50) != 0,
+    };
+    const F32 emPerUnit = 1.0f / static_cast<F32>(SlugReadU16(file + head + 18));
+    font.ascent = static_cast<F32>(SlugReadI16(file + hhea + 4)) * emPerUnit;
+
+    const SlugTransform toEm = {.xx = emPerUnit, .yy = emPerUnit};
+    static SlugGlyphBuilder builder;
+    for (U32 i = 0; i < kSlugGlyphCount; ++i) {
+        const U32 character = kSlugFirstChar + i;
+        const U32 glyph = SlugGlyphIndex(trueType, character);
+        if (glyph == 0 && character != ' ') {
+            Die("finding a glyph", character);
+        }
+        builder.curveCount = 0;
+        SlugDecodeGlyph(font, builder, trueType, glyph, toEm, 0);
+        // Glyphs past the last metric share its advance.
+        const U32 metric = Min(glyph, trueType.hMetricCount - 1);
+        SlugFinishGlyph(font, font.glyphs[i], builder,
+                        static_cast<F32>(SlugReadU16(file + trueType.hmtx + 4 * metric)) * emPerUnit);
+    }
+    font.capHeight = font.glyphs['H' - kSlugFirstChar].maxY;
 }
 
 #endif

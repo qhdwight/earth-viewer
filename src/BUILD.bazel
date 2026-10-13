@@ -58,6 +58,12 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "platform_linux",
+    hdrs = ["platform_linux.h"],
+    visibility = ["//visibility:public"],
+)
+
 glsl_header(
     name = "earth_vert",
     src = "earth.vert",
@@ -164,6 +170,7 @@ cc_binary(
             "-framework CoreGraphics",
             "-framework CoreText",
         ],
+        "@platforms//os:linux": ["-lX11"],
         "//conditions:default": [],
     }),
     deps = [
@@ -177,6 +184,7 @@ cc_binary(
     ] + select({
         "@platforms//os:macos": [":platform_macos"],
         "@platforms//os:windows": [":platform_win32"],
+        "@platforms//os:linux": [":platform_linux"],
         "//conditions:default": [],
     }),
 )

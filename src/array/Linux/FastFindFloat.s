@@ -7,7 +7,7 @@
 ; *    Last updated Mar 12, 2021
 ; *******************************************************************/
 
-bits 64section .textalign 64global FastFindFloat
+bits 64default relsection .textalign 64global FastFindFloat
 
 FastFindFloat:
  vbroadcastss ymm0,xmm0

@@ -1,6 +1,7 @@
 # Template for the generated @vulkan repository. extensions.bzl symlinks the
-# SDK's include/, lib/ and bin/ directories beside this file and substitutes
-# the %{...} placeholders. Everything else is an ordinary BUILD file.
+# SDK's include/, lib/ and bin/ directories (or on Linux, possibly the system
+# headers and glslang) beside this file and substitutes the %{...}
+# placeholders. Everything else is an ordinary BUILD file.
 
 load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
@@ -28,10 +29,8 @@ cc_library(
             "-lvulkan",
             "-Wl,-rpath,%{lib_dir}",
         ],
-        "//conditions:default": [
-            "-L%{lib_dir}",
-            "-lvulkan",
-        ],
+        # The SDK's lib/, or the system loader from the distribution.
+        "//conditions:default": [%{default_linkopts}],
     }),
     visibility = ["//visibility:public"],
     deps = select({

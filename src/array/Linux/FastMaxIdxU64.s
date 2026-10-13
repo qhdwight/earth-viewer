@@ -8,6 +8,7 @@
 ; *******************************************************************/
 
 bits 64
+default rel
 section .text
 align 64
 global FastMaxIdxU64

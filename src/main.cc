@@ -12,6 +12,15 @@
 #elif defined(__APPLE__)
 #include <CoreText/CoreText.h>
 #include <unistd.h>
+#elif defined(__linux__)
+#include <X11/Xlib.h>
+#include <X11/XKBlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
+#include <time.h>
+#include <unistd.h>
+#define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
 #include <vulkan/vulkan.h>
@@ -46,7 +55,7 @@
 #if defined(_WIN32)
     ExitProcess(1);
 #else
-    exit(1);
+    _exit(1);
 #endif
 }
 
@@ -445,6 +454,8 @@ static void CreateSwapchain() {
 
 #if defined(_WIN32)
 #include "src/platform_win32.h"
+#elif defined(__linux__)
+#include "src/platform_linux.h"
 #endif
 
 static void InitVulkan() {

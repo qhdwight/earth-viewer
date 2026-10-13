@@ -827,7 +827,7 @@ public:
 
     class Iterator {
     public:
-        ALWAYS_INLINEIterator(const uint64_t *__restrict v) : m_v(v) {
+        ALWAYS_INLINE Iterator(const uint64_t *__restrict v) : m_v(v) {
             for (m_iBlock = 0; m_iBlock < kNumBlocks - 1; ++m_iBlock) {
                 m_block = m_v[m_iBlock];
                 if (m_block) {

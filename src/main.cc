@@ -18,7 +18,6 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
-#include <sys/mman.h>
 #include <ctime>
 #include <unistd.h>
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -1205,8 +1204,7 @@ static bool DrawFrame(Renderer &r, TextRenderer &text, const Camera &camera, con
     return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
 }
 
-// All of the program's state. main owns it and hands each function only the
-// parts it uses.
+// All of the program's state. main hands each function only the parts it uses.
 struct App {
     Platform platform;
     Input input;
@@ -1217,9 +1215,12 @@ struct App {
     Simulation simulation;
 };
 
+// Too big for the stack, so it is static storage, which starts zeroed. The one
+// global allowed to change: only main names it, once, and passes it down.
+static App appStorage;
+
 int main() {
-    // Too big for the stack, so it lives in pages that start zeroed.
-    App &app = *static_cast<App *>(AllocatePages(sizeof(App)));
+    App &app = appStorage;
     Renderer &r = app.renderer;
     Simulation &sim = app.simulation;
     app.camera = kStartCamera;

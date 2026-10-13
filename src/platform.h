@@ -5,7 +5,7 @@
 #include "src/core.h"
 
 // The boundary between main.cc and the platform layer: the window, input,
-// clocks, memory and Vulkan surface. platform_win32.h and platform_linux.h
+// clocks and Vulkan surface. platform_win32.h and platform_linux.h
 // implement it inside main.cc's translation unit; platform_macos.mm is its own
 // Objective-C++ one. The platform layer keeps no state of its own: main.cc
 // owns a Platform and an Input and passes them in.
@@ -82,8 +82,6 @@ void MoveMouse(Input &input, I32 x, I32 y);
 // Defined by the platform layer.
 extern char const *const kSurfaceExtensionName;
 
-// Zeroed, read-write memory for the program's lifetime. Only called at startup.
-void *AllocatePages(U64 bytes);
 
 void CreateAppWindow(Platform &platform, Input &input);
 

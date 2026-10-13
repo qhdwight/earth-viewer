@@ -3,7 +3,6 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <mach/mach_time.h>
-#include <sys/mman.h>
 #include <sys/time.h>
 
 #define VK_USE_PLATFORM_METAL_EXT
@@ -47,14 +46,6 @@ static CAMetalLayer *PlatformLayer(const Platform &platform) {
     return NO;
 }
 @end
-
-void *AllocatePages(const U64 bytes) {
-    void *const pages = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (pages == MAP_FAILED) {
-        Die("mmap", static_cast<I64>(bytes));
-    }
-    return pages;
-}
 
 // Follows the window's size and backing scale. A changed drawable size asks
 // main.cc for a new swapchain, since the surface reports the drawable size.

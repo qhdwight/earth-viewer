@@ -16,4 +16,5 @@
 - Always use curly braces for loops and if statements
 # Misc
 - Do not use static local variables in functions or mutate global static variables, pass in scratch via the arguments if too big for the stack
+  - The one exception is one static super-struct referenced only once in main
 - Use fixed-size array references when possible instead of pointers

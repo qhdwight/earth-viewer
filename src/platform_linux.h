@@ -25,14 +25,6 @@ struct Platform {
     long iconProperty[2 + kIconArgbSize * kIconArgbSize];
 };
 
-void *AllocatePages(const U64 bytes) {
-    void *const pages = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (pages == MAP_FAILED) {
-        Die("mmap", static_cast<I64>(bytes));
-    }
-    return pages;
-}
-
 // Desktops publish their scale as Xft.dpi in the root window's resource
 // database, and GNOME and KDE update it when the scale changes. Unscaled
 // without one.

@@ -19,14 +19,6 @@ struct Platform {
     Input *input;
 };
 
-void *AllocatePages(const U64 bytes) {
-    void *const pages = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!pages) {
-        Die("VirtualAlloc", static_cast<I64>(GetLastError()));
-    }
-    return pages;
-}
-
 // Decodes the smallest embedded PNG at least as large as the icon, so Windows
 // only ever scales down.
 static HICON CreateWindowIcon(const int size) {

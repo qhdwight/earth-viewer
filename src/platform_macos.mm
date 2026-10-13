@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <mach/mach_time.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 
 #define VK_USE_PLATFORM_METAL_EXT
@@ -19,46 +20,63 @@ constexpr CGFloat kScrollPointsPerNotch = 10.0;
 
 char const *const kSurfaceExtensionName = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
 
-static NSWindow *window;
-static NSView *view;
-static CAMetalLayer *layer;
-static U32 drawableWidth; // pixels
-static U32 drawableHeight;
-static bool closed;
+// The AppKit objects in a Platform. They are retained for the program's
+// lifetime by the bridged casts in CreateAppWindow.
+static NSWindow *PlatformWindow(const Platform &platform) {
+    return (__bridge NSWindow *)platform.window;
+}
+
+static NSView *PlatformView(const Platform &platform) {
+    return (__bridge NSView *)platform.view;
+}
+
+static CAMetalLayer *PlatformLayer(const Platform &platform) {
+    return (__bridge CAMetalLayer *)platform.layer;
+}
 
 // Closing only sets a flag; main.cc sees it and exits its loop.
-@interface EarthViewerWindowDelegate : NSObject <NSWindowDelegate>
+@interface EarthViewerWindowDelegate : NSObject <NSWindowDelegate> {
+@public
+    Platform *platform;
+}
 @end
 
 @implementation EarthViewerWindowDelegate
 - (BOOL)windowShouldClose:(NSWindow *)sender {
-    closed = true;
+    platform->closed = true;
     return NO;
 }
 @end
 
-static EarthViewerWindowDelegate *windowDelegate;
+void *AllocatePages(const U64 bytes) {
+    void *const pages = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (pages == MAP_FAILED) {
+        Die("mmap", static_cast<I64>(bytes));
+    }
+    return pages;
+}
 
 // Follows the window's size and backing scale. A changed drawable size asks
 // main.cc for a new swapchain, since the surface reports the drawable size.
-static void UpdateDrawableSize() {
-    const CGFloat scale = window.backingScaleFactor;
-    if (static_cast<F32>(scale) != uiScale) {
-        uiScale = static_cast<F32>(scale);
+static void UpdateDrawableSize(Platform &platform, Input &input) {
+    CAMetalLayer *const layer = PlatformLayer(platform);
+    const CGFloat scale = PlatformWindow(platform).backingScaleFactor;
+    if (static_cast<F32>(scale) != input.uiScale) {
+        input.uiScale = static_cast<F32>(scale);
         layer.contentsScale = scale;
     }
-    const NSSize size = view.bounds.size;
+    const NSSize size = PlatformView(platform).bounds.size;
     const U32 width = static_cast<U32>(size.width * scale + 0.5);
     const U32 height = static_cast<U32>(size.height * scale + 0.5);
-    if (width != drawableWidth || height != drawableHeight) {
-        drawableWidth = width;
-        drawableHeight = height;
+    if (width != platform.drawableWidth || height != platform.drawableHeight) {
+        platform.drawableWidth = width;
+        platform.drawableHeight = height;
         layer.drawableSize = CGSizeMake(width, height);
-        resizePending = true;
+        input.resizePending = true;
     }
 }
 
-void CreateAppWindow() {
+void CreateAppWindow(Platform &platform, Input &input) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -67,29 +85,37 @@ void CreateAppWindow() {
         NSApp.applicationIconImage = [[NSImage alloc] initWithData:iconData];
 
         // The content size is in points, which match UI pixels.
-        window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWindowWidth, kWindowHeight)
-                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                                       NSWindowStyleMaskMiniaturizable |
-                                                       NSWindowStyleMaskResizable
-                                               backing:NSBackingStoreBuffered
-                                                 defer:NO];
+        NSWindow *const window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, kWindowWidth, kWindowHeight)
+                                                             styleMask:NSWindowStyleMaskTitled |
+                                                                       NSWindowStyleMaskClosable |
+                                                                       NSWindowStyleMaskMiniaturizable |
+                                                                       NSWindowStyleMaskResizable
+                                                               backing:NSBackingStoreBuffered
+                                                                 defer:NO];
         if (!window) {
             Die("creating the window", 0);
         }
-        windowDelegate = [[EarthViewerWindowDelegate alloc] init];
+        // The window holds its delegate weakly; the Platform keeps it alive.
+        EarthViewerWindowDelegate *const windowDelegate = [[EarthViewerWindowDelegate alloc] init];
+        windowDelegate->platform = &platform;
         window.releasedWhenClosed = NO;
         window.delegate = windowDelegate;
         window.title = @"Earth Viewer";
         [window center];
 
         // A layer-hosting view: the CAMetalLayer is set before wantsLayer.
-        view = window.contentView;
-        layer = [CAMetalLayer layer];
+        NSView *const view = window.contentView;
+        CAMetalLayer *const layer = [CAMetalLayer layer];
         layer.opaque = YES;
         view.layer = layer;
         view.wantsLayer = YES;
-        UpdateDrawableSize();
-        resizePending = false;
+
+        platform.window = (__bridge_retained void *)window;
+        platform.view = (__bridge_retained void *)view;
+        platform.layer = (__bridge_retained void *)layer;
+        platform.windowDelegate = (__bridge_retained void *)windowDelegate;
+        UpdateDrawableSize(platform, input);
+        input.resizePending = false;
 
         [window makeKeyAndOrderFront:nil];
         [NSApp finishLaunching];
@@ -97,10 +123,10 @@ void CreateAppWindow() {
     }
 }
 
-VkSurfaceKHR CreateSurface(const VkInstance instance) {
+VkSurfaceKHR CreateSurface(const Platform &platform, const VkInstance instance) {
     const VkMetalSurfaceCreateInfoEXT surfaceInfo = {
         .sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT,
-        .pLayer = layer,
+        .pLayer = PlatformLayer(platform),
     };
     VkSurfaceKHR surface;
     const VkResult result = vkCreateMetalSurfaceEXT(instance, &surfaceInfo, nullptr, &surface);
@@ -120,20 +146,20 @@ static unichar KeyCharacter(NSString *const characters) {
     return character >= 'a' && character <= 'z' ? static_cast<unichar>(character - 'a' + 'A') : character;
 }
 
-static bool InView(const NSPoint location) {
-    return NSPointInRect(location, view.bounds);
+static bool InView(const Platform &platform, const NSPoint location) {
+    return NSPointInRect(location, PlatformView(platform).bounds);
 }
 
 // Applies one event to the input state. Returns whether AppKit should also
 // see it: key events are kept from it, since unhandled ones beep.
-static bool HandleEvent(NSEvent *const event) {
+static bool HandleEvent(Platform &platform, Input &input, NSEvent *const event) {
     const NSEventType type = event.type;
     const NSEventModifierFlags modifiers = event.modifierFlags;
-    const bool inView = event.window == window && InView(event.locationInWindow);
+    const bool inView = event.window == PlatformWindow(platform) && InView(platform, event.locationInWindow);
     if (type == NSEventTypeKeyDown) {
         const unichar key = KeyCharacter(event.charactersIgnoringModifiers);
         if (key == kCharEscape || ((modifiers & NSEventModifierFlagCommand) != 0 && key == 'Q')) {
-            closed = true;
+            platform.closed = true;
         }
         // Keys released while Command is held send no key up, so Command
         // shortcuts never count as held keys.
@@ -145,7 +171,7 @@ static bool HandleEvent(NSEvent *const event) {
         }
         if (!event.isARepeat) {
             // Characters rather than keys, so [ and ] work on any layout.
-            StepTimeRate(KeyCharacter(event.characters));
+            StepTimeRate(input, KeyCharacter(event.characters));
         }
         if (key < kMaxKeys) {
             input.keyDown[key] = true;
@@ -189,17 +215,17 @@ static bool HandleEvent(NSEvent *const event) {
 }
 
 // Reads the cursor in window pixels, top left origin like Windows.
-static void PollMouse() {
-    const NSPoint location = window.mouseLocationOutsideOfEventStream;
-    input.mouseInside = InView(location);
-    const CGFloat x = location.x * uiScale;
-    const CGFloat y = (view.bounds.size.height - location.y) * uiScale;
-    MoveMouse(static_cast<I32>(x < 0.0 ? x - 1.0 : x), static_cast<I32>(y < 0.0 ? y - 1.0 : y));
+static void PollMouse(const Platform &platform, Input &input) {
+    const NSPoint location = PlatformWindow(platform).mouseLocationOutsideOfEventStream;
+    input.mouseInside = InView(platform, location);
+    const CGFloat x = location.x * input.uiScale;
+    const CGFloat y = (PlatformView(platform).bounds.size.height - location.y) * input.uiScale;
+    MoveMouse(input, static_cast<I32>(x < 0.0 ? x - 1.0 : x), static_cast<I32>(y < 0.0 ? y - 1.0 : y));
 }
 
-bool PumpEvents() {
+bool PumpEvents(Platform &platform, Input &input) {
     @autoreleasepool {
-        PollMouse();
+        PollMouse(platform, input);
         for (;;) {
             NSEvent *const event = [NSApp nextEventMatchingMask:NSEventMaskAny
                                                       untilDate:NSDate.distantPast
@@ -208,27 +234,27 @@ bool PumpEvents() {
             if (!event) {
                 break;
             }
-            if (HandleEvent(event)) {
+            if (HandleEvent(platform, input, event)) {
                 [NSApp sendEvent:event];
             }
         }
         [NSApp updateWindows];
-        if (!window.isKeyWindow) {
+        if (!PlatformWindow(platform).isKeyWindow) {
             for (bool &down: input.keyDown) {
                 down = false;
             }
         }
-        UpdateDrawableSize();
+        UpdateDrawableSize(platform, input);
     }
-    return !closed;
+    return !platform.closed;
 }
 
-bool WindowVisible() {
-    return !window.isMiniaturized && drawableWidth > 0 && drawableHeight > 0;
+bool WindowVisible(const Platform &platform) {
+    return !PlatformWindow(platform).isMiniaturized && platform.drawableWidth > 0 && platform.drawableHeight > 0;
 }
 
 // Leaves the event queued for PumpEvents.
-void WaitForEvents() {
+void WaitForEvents(const Platform &) {
     @autoreleasepool {
         [NSApp nextEventMatchingMask:NSEventMaskAny
                            untilDate:NSDate.distantFuture

@@ -10,9 +10,9 @@ inline constexpr F64 kWgs84Flattening = 1.0 / 298.257223563;
 inline constexpr F64 kDegreesPerRadian = 180.0 / kPi64;
 
 struct Geodetic {
-    F64 latitude;  // radians, positive north
+    F64 latitude; // radians, positive north
     F64 longitude; // radians, positive east
-    F64 altitude;  // meters above the ellipsoid
+    F64 altitude; // meters above the ellipsoid
 };
 
 // Bowring's method from ECEF meters, with two steps: each derives the geodetic
@@ -24,8 +24,8 @@ inline Geodetic GeodeticFromEcef(const Vec3d p) {
     const F64 a = kEarthRadius;
     const F64 b = a * (1.0 - kWgs84Flattening);
     const F64 e2 = kWgs84Flattening * (2.0 - kWgs84Flattening); // first eccentricity squared
-    const F64 ep2 = e2 / (1.0 - e2);                              // second eccentricity squared
-    const F64 axial = Sqrt(p.x * p.x + p.y * p.y);                // distance from the polar axis
+    const F64 ep2 = e2 / (1.0 - e2); // second eccentricity squared
+    const F64 axial = Sqrt(p.x * p.x + p.y * p.y); // distance from the polar axis
 
     // First estimate of beta: tan beta = a z / (b axial).
     F64 betaY = p.z * a;

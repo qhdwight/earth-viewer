@@ -12,21 +12,31 @@ constexpr long kWindowEvents = KeyPressMask | KeyReleaseMask | ButtonPressMask |
                                PointerMotionMask | EnterWindowMask | LeaveWindowMask | FocusChangeMask |
                                StructureNotifyMask;
 
-static Display *display = nullptr;
-static Window window = 0;
-static Atom wmDeleteWindow = 0;
-static U32 windowWidth = 0; // pixels
-static U32 windowHeight = 0;
-static bool mapped = false;
-static bool closed = false;
-// _NET_WM_ICON: width, height, then ARGB pixels. Xlib passes 32-bit property
-// items in longs.
-static long iconProperty[2 + kIconArgbSize * kIconArgbSize];
+struct Platform {
+    Display *display;
+    Window window;
+    Atom wmDeleteWindow;
+    U32 width; // pixels
+    U32 height;
+    bool mapped;
+    bool closed;
+    // _NET_WM_ICON: width, height, then ARGB pixels. Xlib passes 32-bit
+    // property items in longs.
+    long iconProperty[2 + kIconArgbSize * kIconArgbSize];
+};
+
+void *AllocatePages(const U64 bytes) {
+    void *const pages = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) {
+        Die("mmap", static_cast<I64>(bytes));
+    }
+    return pages;
+}
 
 // Desktops publish their scale as Xft.dpi in the root window's resource
 // database, and GNOME and KDE update it when the scale changes. Unscaled
 // without one.
-static F32 ReadUiScale() {
+static F32 ReadUiScale(Display *const display) {
     Atom type;
     int format;
     unsigned long count;
@@ -73,13 +83,13 @@ static U32 KeyIndex(const KeySym keySym) {
     return keySym < kMaxKeys ? static_cast<U32>(keySym) : 0;
 }
 
-static void HandleEvent(XEvent &event) {
+static void HandleEvent(Platform &platform, Input &input, XEvent &event) {
     switch (event.type) {
         case KeyPress: {
             // The unshifted symbol, so Shift+W still holds W.
             const KeySym keySym = XLookupKeysym(&event.xkey, 0);
             if (keySym == XK_Escape) {
-                closed = true;
+                platform.closed = true;
             }
             const U32 key = KeyIndex(keySym);
             // With detectable auto-repeat a held key repeats as presses alone.
@@ -92,7 +102,7 @@ static void HandleEvent(XEvent &event) {
                 char text[kMaxKeyText];
                 const int length = XLookupString(&event.xkey, text, sizeof(text), nullptr, nullptr);
                 if (length == 1) {
-                    StepTimeRate(static_cast<U8>(text[0]));
+                    StepTimeRate(input, static_cast<U8>(text[0]));
                 }
             }
             input.keyDown[key] = true;
@@ -145,14 +155,14 @@ static void HandleEvent(XEvent &event) {
         case MotionNotify: {
             const I32 x = event.xmotion.x;
             const I32 y = event.xmotion.y;
-            input.mouseInside = x >= 0 && y >= 0 && x < static_cast<I32>(windowWidth) &&
-                                y < static_cast<I32>(windowHeight);
-            MoveMouse(x, y);
+            input.mouseInside = x >= 0 && y >= 0 && x < static_cast<I32>(platform.width) &&
+                                y < static_cast<I32>(platform.height);
+            MoveMouse(input, x, y);
             break;
         }
         case EnterNotify: {
             input.mouseInside = true;
-            MoveMouse(event.xcrossing.x, event.xcrossing.y);
+            MoveMouse(input, event.xcrossing.x, event.xcrossing.y);
             break;
         }
         case LeaveNotify: {
@@ -162,31 +172,31 @@ static void HandleEvent(XEvent &event) {
         case ConfigureNotify: {
             const U32 width = static_cast<U32>(event.xconfigure.width);
             const U32 height = static_cast<U32>(event.xconfigure.height);
-            if (width != windowWidth || height != windowHeight) {
-                windowWidth = width;
-                windowHeight = height;
-                resizePending = true;
+            if (width != platform.width || height != platform.height) {
+                platform.width = width;
+                platform.height = height;
+                input.resizePending = true;
             }
             break;
         }
         // Window managers unmap minimized windows.
         case MapNotify: {
-            mapped = true;
+            platform.mapped = true;
             break;
         }
         case UnmapNotify: {
-            mapped = false;
+            platform.mapped = false;
             break;
         }
         case ClientMessage: {
-            if (static_cast<Atom>(event.xclient.data.l[0]) == wmDeleteWindow) {
-                closed = true;
+            if (static_cast<Atom>(event.xclient.data.l[0]) == platform.wmDeleteWindow) {
+                platform.closed = true;
             }
             break;
         }
         case PropertyNotify: {
             if (event.xproperty.atom == XA_RESOURCE_MANAGER) {
-                uiScale = ReadUiScale();
+                input.uiScale = ReadUiScale(platform.display);
             }
             break;
         }
@@ -196,25 +206,27 @@ static void HandleEvent(XEvent &event) {
     }
 }
 
-void CreateAppWindow() {
-    display = XOpenDisplay(nullptr);
+void CreateAppWindow(Platform &platform, Input &input) {
+    Display *const display = XOpenDisplay(nullptr);
     if (!display) {
         Die("XOpenDisplay", 0);
     }
+    platform.display = display;
     const Window root = DefaultRootWindow(display);
     // The window size is in UI pixels; scale it like the rest of the desktop.
-    uiScale = ReadUiScale();
-    windowWidth = static_cast<U32>(static_cast<F32>(kWindowWidth) * uiScale + 0.5f);
-    windowHeight = static_cast<U32>(static_cast<F32>(kWindowHeight) * uiScale + 0.5f);
+    input.uiScale = ReadUiScale(display);
+    platform.width = static_cast<U32>(static_cast<F32>(kWindowWidth) * input.uiScale + 0.5f);
+    platform.height = static_cast<U32>(static_cast<F32>(kWindowHeight) * input.uiScale + 0.5f);
     XSetWindowAttributes attributes = {
         .background_pixel = BlackPixel(display, DefaultScreen(display)),
         .event_mask = kWindowEvents,
     };
-    window = XCreateWindow(display, root, 0, 0, windowWidth, windowHeight, 0, CopyFromParent, InputOutput,
-                           CopyFromParent, CWBackPixel | CWEventMask, &attributes);
+    const Window window = XCreateWindow(display, root, 0, 0, platform.width, platform.height, 0, CopyFromParent,
+                                        InputOutput, CopyFromParent, CWBackPixel | CWEventMask, &attributes);
     if (!window) {
         Die("XCreateWindow", 0);
     }
+    platform.window = window;
     // Watch the resource database for scale changes.
     XSelectInput(display, root, PropertyChangeMask);
 
@@ -223,17 +235,17 @@ void CreateAppWindow() {
     XClassHint classHint = {.res_name = appName, .res_class = appName};
     XSetClassHint(display, window, &classHint);
     // Closing the window asks rather than kills the connection.
-    wmDeleteWindow = XInternAtom(display, "WM_DELETE_WINDOW", False);
-    XSetWMProtocols(display, window, &wmDeleteWindow, 1);
+    platform.wmDeleteWindow = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(display, window, &platform.wmDeleteWindow, 1);
 
-    iconProperty[0] = kIconArgbSize;
-    iconProperty[1] = kIconArgbSize;
+    platform.iconProperty[0] = kIconArgbSize;
+    platform.iconProperty[1] = kIconArgbSize;
     for (U32 i = 0; i < Count(kIconArgb64); ++i) {
-        iconProperty[2 + i] = kIconArgb64[i];
+        platform.iconProperty[2 + i] = kIconArgb64[i];
     }
     XChangeProperty(display, window, XInternAtom(display, "_NET_WM_ICON", False), XA_CARDINAL, 32,
-                    PropModeReplace, reinterpret_cast<const unsigned char *>(iconProperty),
-                    static_cast<int>(Count(iconProperty)));
+                    PropModeReplace, reinterpret_cast<const unsigned char *>(platform.iconProperty),
+                    static_cast<int>(Count(platform.iconProperty)));
 
     // Otherwise a held key repeats as release and press pairs, which look
     // like real presses.
@@ -242,34 +254,34 @@ void CreateAppWindow() {
     XFlush(display);
 }
 
-VkSurfaceKHR CreateSurface(const VkInstance instance) {
+VkSurfaceKHR CreateSurface(const Platform &platform, const VkInstance instance) {
     const VkXlibSurfaceCreateInfoKHR surfaceInfo = {
         .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
-        .dpy = display,
-        .window = window,
+        .dpy = platform.display,
+        .window = platform.window,
     };
     VkSurfaceKHR surface;
     VK_CHECK(vkCreateXlibSurfaceKHR(instance, &surfaceInfo, nullptr, &surface));
     return surface;
 }
 
-bool PumpEvents() {
-    while (XPending(display) > 0) {
+bool PumpEvents(Platform &platform, Input &input) {
+    while (XPending(platform.display) > 0) {
         XEvent event;
-        XNextEvent(display, &event);
-        HandleEvent(event);
+        XNextEvent(platform.display, &event);
+        HandleEvent(platform, input, event);
     }
-    return !closed;
+    return !platform.closed;
 }
 
-bool WindowVisible() {
-    return mapped && windowWidth > 0 && windowHeight > 0;
+bool WindowVisible(const Platform &platform) {
+    return platform.mapped && platform.width > 0 && platform.height > 0;
 }
 
 // Leaves the event queued for PumpEvents.
-void WaitForEvents() {
+void WaitForEvents(const Platform &platform) {
     XEvent event;
-    XPeekEvent(display, &event);
+    XPeekEvent(platform.display, &event);
 }
 
 U64 Counter() {

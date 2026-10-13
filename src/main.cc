@@ -18,7 +18,8 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
-#include <time.h>
+#include <sys/mman.h>
+#include <ctime>
 #include <unistd.h>
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
@@ -216,63 +217,62 @@ constexpr Vec3 kCameraRight = {1.0f, 0.0f, 0.0f};
 constexpr Vec3 kCameraUp = {0.0f, 1.0f, 0.0f};
 constexpr Vec3 kCameraForward = {0.0f, 0.0f, -1.0f};
 
+// Vulkan objects. Starts zeroed, so every handle is VK_NULL_HANDLE.
 struct Renderer {
-    VkInstance instance = VK_NULL_HANDLE;
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    U32 queueFamily = 0;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
+    VkInstance instance;
+    VkSurfaceKHR surface;
+    VkPhysicalDevice physicalDevice;
+    U32 queueFamily;
+    VkDevice device;
+    VkQueue queue;
 
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
-    VkExtent2D extent{};
-    U32 imageCount = 0;
-    VkImage images[kMaxImages]{};
-    VkImageView views[kMaxImages]{};
-    VkSemaphore renderDone[kMaxImages]{};
+    VkSwapchainKHR swapchain;
+    VkFormat format;
+    VkExtent2D extent;
+    U32 imageCount;
+    VkImage images[kMaxImages];
+    VkImageView views[kMaxImages];
+    VkSemaphore renderDone[kMaxImages];
     // Multisampled colour target, resolved into the swapchain image.
-    VkImage msaaImage = VK_NULL_HANDLE;
-    VkDeviceMemory msaaMemory = VK_NULL_HANDLE;
-    VkImageView msaaView = VK_NULL_HANDLE;
+    VkImage msaaImage;
+    VkDeviceMemory msaaMemory;
+    VkImageView msaaView;
 
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    VkDeviceAddress vertexAddress = 0;
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexMemory;
+    VkDeviceAddress vertexAddress;
 
-    VkSemaphore acquire = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline spherePipeline = VK_NULL_HANDLE;
-    VkPipeline linePipeline = VK_NULL_HANDLE;
+    VkSemaphore acquire;
+    VkFence fence;
+    VkCommandPool pool;
+    VkCommandBuffer cmd;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline spherePipeline;
+    VkPipeline linePipeline;
 
     // Markers as vec4 in world space, satellites rewritten every frame.
-    VkBuffer satelliteBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory satelliteMemory = VK_NULL_HANDLE;
-    VkDeviceAddress satelliteAddress = 0;
-    F32 (*satellitePositions)[4] = nullptr; // kMarkerCount
-    VkPipelineLayout satelliteLayout = VK_NULL_HANDLE;
-    VkPipeline satellitePipeline = VK_NULL_HANDLE;
+    VkBuffer satelliteBuffer;
+    VkDeviceMemory satelliteMemory;
+    VkDeviceAddress satelliteAddress;
+    F32 (*satellitePositions)[4]; // kMarkerCount
+    VkPipelineLayout satelliteLayout;
+    VkPipeline satellitePipeline;
 
     // Link endpoints as vec4 pairs in world space, rewritten every frame.
-    VkBuffer linkBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory linkMemory = VK_NULL_HANDLE;
-    VkDeviceAddress linkAddress = 0;
-    F32 (*linkPoints)[2][4] = nullptr; // kMaxLinks
-    VkPipeline linkPipeline = VK_NULL_HANDLE;
+    VkBuffer linkBuffer;
+    VkDeviceMemory linkMemory;
+    VkDeviceAddress linkAddress;
+    F32 (*linkPoints)[2][4]; // kMaxLinks
+    VkPipeline linkPipeline;
 };
 
-static Renderer r;
-static Camera camera = {.position = {{0.0f, 0.0f, 3.0f}}, .yaw = 0.0f, .pitch = 0.0f};
-Input input;
+constexpr Camera kStartCamera = {.position = {{0.0f, 0.0f, 3.0f}}, .yaw = 0.0f, .pitch = 0.0f};
 
-static F64 TimeRate() {
+static F64 TimeRate(const Input &input) {
     return kTimeRates[kRealTimeRate + input.timeRateStep];
 }
 
-void StepTimeRate(const U32 character) {
+void StepTimeRate(Input &input, const U32 character) {
     const I32 slowest = -kRealTimeRate;
     const I32 fastest = static_cast<I32>(Count(kTimeRates)) - 1 - kRealTimeRate;
     if (character == ']') {
@@ -283,7 +283,7 @@ void StepTimeRate(const U32 character) {
     }
 }
 
-void MoveMouse(const I32 x, const I32 y) {
+void MoveMouse(Input &input, const I32 x, const I32 y) {
     input.mouseX = x;
     input.mouseY = y;
     if (input.dragging || input.orbiting) {
@@ -303,20 +303,17 @@ void MoveMouse(const I32 x, const I32 y) {
 }
 
 constexpr F32 kFpsUpdateSeconds = 0.5f;
-static U32 displayedFps = 0;
-// The app renders at full resolution, so sizes meant for the screen, like
-// text, minimum line widths and dots, are given in UI pixels and multiplied by
-// uiScale. Updated when the window changes monitors.
-F32 uiScale = 1.0f;
-bool resizePending = false;
-// Simulated UTC as Windows FILETIME ticks, advanced once per frame at the
-// selected time rate. The Sun, the satellites and the clock all follow it.
-static U64 frameUtcTicks = 0;
-// ECEF orbit states, advanced by simulated time every frame.
-static OrbitState satelliteStates[kSatelliteCount];
-static GroundStation groundStations[kStationCount];
-static Link links[kMaxLinks];
-static U32 linkCount = 0;
+
+struct Simulation {
+    // ECEF orbit states, advanced by simulated time every frame.
+    OrbitState satelliteStates[kSatelliteCount];
+    GroundStation groundStations[kStationCount];
+    Link links[kMaxLinks];
+    U32 linkCount;
+    // Simulated UTC as Windows FILETIME ticks, advanced once per frame at the
+    // selected time rate. The Sun, the satellites and the clock all follow it.
+    U64 utcTicks;
+};
 
 // What the cursor is over: found each frame by PickHover, labelled by DrawOverlay.
 enum HoverKind : U32 {
@@ -331,7 +328,6 @@ struct Hover {
     U32 index; // into satelliteStates, groundStations or links
 };
 
-static Hover hover;
 // Picking distances from the cursor, in UI pixels. Dots win over links.
 constexpr F32 kPickDotPixels = 8.0f;
 constexpr F32 kPickLinkPixels = 5.0f;
@@ -339,7 +335,7 @@ constexpr F32 kPickLinkPixels = 5.0f;
 // counting as hidden behind it. Matches kOcclusionMargin in globe.glsl.
 constexpr F32 kOcclusionMargin = 0.001f;
 
-static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted) {
+static U32 FindMemoryType(const Renderer &r, const U32 typeBits, const VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties memoryProps;
     vkGetPhysicalDeviceMemoryProperties(r.physicalDevice, &memoryProps);
     for (const U32 iType: SmallBitArray{typeBits}) {
@@ -350,7 +346,7 @@ static U32 FindMemoryType(const U32 typeBits, const VkMemoryPropertyFlags wanted
     Die("finding a memory type", wanted);
 }
 
-static void CreateSwapchain() {
+static void CreateSwapchain(Renderer &r) {
     vkDeviceWaitIdle(r.device);
     for (U32 i = 0; i < r.imageCount; ++i) {
         vkDestroyImageView(r.device, r.views[i], nullptr);
@@ -438,7 +434,7 @@ static void CreateSwapchain() {
     const VkMemoryAllocateInfo msaaAlloc = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = msaaRequirements.size,
-        .memoryTypeIndex = FindMemoryType(msaaRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        .memoryTypeIndex = FindMemoryType(r, msaaRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
     };
     VK_CHECK(vkAllocateMemory(r.device, &msaaAlloc, nullptr, &r.msaaMemory));
     VK_CHECK(vkBindImageMemory(r.device, r.msaaImage, r.msaaMemory, 0));
@@ -458,7 +454,7 @@ static void CreateSwapchain() {
 #include "src/platform_linux.h"
 #endif
 
-static void InitVulkan() {
+static void InitVulkan(Renderer &r, const Platform &platform) {
     constexpr VkApplicationInfo kApp = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = kAppName,
@@ -477,7 +473,7 @@ static void InitVulkan() {
     };
     VK_CHECK(vkCreateInstance(&instanceInfo, nullptr, &r.instance));
 
-    r.surface = CreateSurface(r.instance);
+    r.surface = CreateSurface(platform, r.instance);
 
     // Pick the first physical device that speaks Vulkan 1.4 and can both draw
     // and present on one queue family.
@@ -568,7 +564,7 @@ static void InitVulkan() {
     };
     VK_CHECK(vkAllocateCommandBuffers(r.device, &cmdInfo, &r.cmd));
 
-    CreateSwapchain();
+    CreateSwapchain(r);
 }
 
 // Bindless vertex fetch: the vertices live in a plain buffer whose GPU virtual
@@ -576,7 +572,7 @@ static void InitVulkan() {
 // shader through a push constant. No descriptor sets, no vertex input state.
 // Creates a host-visible buffer that shaders read through its device address
 // and returns it persistently mapped.
-static void *CreateMappedBuffer(const U64 size, VkBuffer &buffer, VkDeviceMemory &memory,
+static void *CreateMappedBuffer(const Renderer &r, const U64 size, VkBuffer &buffer, VkDeviceMemory &memory,
                                 VkDeviceAddress &address) {
     const VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -591,7 +587,7 @@ static void *CreateMappedBuffer(const U64 size, VkBuffer &buffer, VkDeviceMemory
 
     constexpr VkMemoryPropertyFlags kWanted =
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    const U32 memoryType = FindMemoryType(requirements.memoryTypeBits, kWanted);
+    const U32 memoryType = FindMemoryType(r, requirements.memoryTypeBits, kWanted);
 
     // Memory backing a buffer whose address is queried must itself be
     // allocated with the device-address flag.
@@ -618,10 +614,10 @@ static void *CreateMappedBuffer(const U64 size, VkBuffer &buffer, VkDeviceMemory
     return mapped;
 }
 
-static void CreateVertexBuffer() {
+static void CreateVertexBuffer(Renderer &r) {
     // Expand every ring into line segments straight into the mapped buffer.
     U32 (&dst)[kSegmentPointCount] = *static_cast<U32 (*)[kSegmentPointCount]>(
-        CreateMappedBuffer(kVertexBufferSize, r.vertexBuffer, r.vertexMemory, r.vertexAddress));
+        CreateMappedBuffer(r, kVertexBufferSize, r.vertexBuffer, r.vertexMemory, r.vertexAddress));
     U32 written = 0;
     for (const BorderRing &ring: kBorderRings) {
         for (U32 i = ring.first; i + 1 < ring.first + ring.count; ++i) {
@@ -633,10 +629,10 @@ static void CreateVertexBuffer() {
     vkUnmapMemory(r.device, r.vertexMemory);
 }
 
-static void CreateSatelliteBuffer() {
-    r.satellitePositions = static_cast<F32 (*)[4]>(CreateMappedBuffer(kSatelliteBufferSize, r.satelliteBuffer,
+static void CreateSatelliteBuffer(Renderer &r) {
+    r.satellitePositions = static_cast<F32 (*)[4]>(CreateMappedBuffer(r, kSatelliteBufferSize, r.satelliteBuffer,
                                                                       r.satelliteMemory, r.satelliteAddress));
-    r.linkPoints = static_cast<F32 (*)[2][4]>(CreateMappedBuffer(kLinkBufferSize, r.linkBuffer, r.linkMemory,
+    r.linkPoints = static_cast<F32 (*)[2][4]>(CreateMappedBuffer(r, kLinkBufferSize, r.linkBuffer, r.linkMemory,
                                                                  r.linkAddress));
 }
 
@@ -649,13 +645,13 @@ static void WriteMarker(F32 (&dst)[4], const Vec3d ecef, const F32 kind) {
 }
 
 // Stations never move in ECEF, so their markers are written once.
-static void WriteStationMarkers() {
+static void WriteStationMarkers(const Renderer &r, const GroundStation (&groundStations)[kStationCount]) {
     for (U32 i = 0; i < kStationCount; ++i) {
         WriteMarker(r.satellitePositions[kSatelliteCount + i], Support(groundStations[i].horizon).xyz, 1.0f);
     }
 }
 
-static VkPipelineLayout CreatePushLayout(const U32 pushSize) {
+static VkPipelineLayout CreatePushLayout(const Renderer &r, const U32 pushSize) {
     const VkPushConstantRange pushRange = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
@@ -674,8 +670,8 @@ static VkPipelineLayout CreatePushLayout(const U32 pushSize) {
 // Scene pipelines use MAX blending. The text overlay, the station links and
 // the satellite and station dots use source-over, so they cover what is
 // beneath them.
-static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const U32 *fragSpirv,
-                                 const U64 fragSize, const VkPipelineLayout layout,
+static VkPipeline CreatePipeline(const Renderer &r, const U32 *vertSpirv, const U64 vertSize,
+                                 const U32 *fragSpirv, const U64 fragSize, const VkPipelineLayout layout,
                                  const bool sourceOver = false) {
     // maintenance5 (core 1.4): chain SPIR-V straight into the stage info,
     // no VkShaderModule objects needed.
@@ -786,7 +782,8 @@ static VkPipeline CreatePipeline(const U32 *vertSpirv, const U64 vertSize, const
     return pipeline;
 }
 
-static void TransitionImage(VkImage image, const VkImageLayout from, const VkImageLayout to,
+static void TransitionImage(const VkCommandBuffer cmd, const VkImage image, const VkImageLayout from,
+                            const VkImageLayout to,
                             const VkPipelineStageFlags2 srcStage, const VkAccessFlags2 srcAccess,
                             const VkPipelineStageFlags2 dstStage,
                             const VkAccessFlags2 dstAccess) {
@@ -807,7 +804,7 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &barrier,
     };
-    vkCmdPipelineBarrier2(r.cmd, &dependency);
+    vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
 #include "src/slug.h"
@@ -815,20 +812,20 @@ static void TransitionImage(VkImage image, const VkImageLayout from, const VkIma
 
 // The camera's orientation: pitch about camera +X, then yaw about world +Y.
 // Positive yaw turns the view toward +X, a negative turn about +Y.
-static Motor3 CameraRotation() {
+static Motor3 CameraRotation(const Camera &camera) {
     return Compose(Rotation(kYAxis, -camera.yaw), Rotation(kXAxis, camera.pitch));
 }
 
 // The camera's pose, taking camera space to world space.
-static Motor3 CameraPose() {
-    return Compose(Translation(camera.position.xyz), CameraRotation());
+static Motor3 CameraPose(const Camera &camera) {
+    return Compose(Translation(camera.position.xyz), CameraRotation(camera));
 }
 
 // Free-fly camera: drag the mouse to look, WASD to move along the view, Q/E
 // down/up, Shift to go faster.
-static void UpdateCamera(const F32 dt) {
-    camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel / uiScale;
-    camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel / uiScale;
+static void UpdateCamera(Camera &camera, Input &input, const F32 dt) {
+    camera.yaw += static_cast<F32>(input.mouseDx) * kMouseRadiansPerPixel / input.uiScale;
+    camera.pitch -= static_cast<F32>(input.mouseDy) * kMouseRadiansPerPixel / input.uiScale;
     camera.pitch = Clamp(camera.pitch, -kMaxPitch, kMaxPitch);
     input.mouseDx = 0;
     input.mouseDy = 0;
@@ -840,7 +837,7 @@ static void UpdateCamera(const F32 dt) {
     // similar speed on screen at any height.
     if (input.orbitDx != 0 || input.orbitDy != 0) {
         const F32 distance = Length(camera.position.xyz);
-        const F32 radiansPerPixel = kMouseRadiansPerPixel / uiScale * (distance - 1.0f) / distance;
+        const F32 radiansPerPixel = kMouseRadiansPerPixel / input.uiScale * (distance - 1.0f) / distance;
         const F32 yawStep = static_cast<F32>(input.orbitDx) * radiansPerPixel;
         const F32 pitchStep = Clamp(camera.pitch - static_cast<F32>(input.orbitDy) * radiansPerPixel, -kMaxPitch,
                                     kMaxPitch) - camera.pitch;
@@ -849,7 +846,7 @@ static void UpdateCamera(const F32 dt) {
         // The new pose is this motor composed with the old one.
         const Motor3 yawTurn = Rotation(kYAxis, -yawStep);
         camera.yaw += yawStep;
-        const Line3 rightAxis = {Transform(CameraRotation(), kCameraRight), {}};
+        const Line3 rightAxis = {Transform(CameraRotation(camera), kCameraRight), {}};
         const Motor3 orbit = Compose(Rotation(rightAxis, pitchStep), yawTurn);
         camera.position = Transform(orbit, camera.position);
         camera.pitch += pitchStep;
@@ -879,7 +876,7 @@ static void UpdateCamera(const F32 dt) {
         camera.yaw += kTau;
     }
 
-    const Motor3 rotation = CameraRotation();
+    const Motor3 rotation = CameraRotation(camera);
     const Vec3 forward = Transform(rotation, kCameraForward);
     const Vec3 right = Transform(rotation, kCameraRight);
     const Vec3 up = Transform(rotation, kCameraUp);
@@ -915,17 +912,18 @@ static void UpdateCamera(const F32 dt) {
     }
 }
 
-static PushConstants BuildPushConstants() {
+static PushConstants BuildPushConstants(const Renderer &r, const Camera &camera, const F32 uiScale,
+                                        const U64 utcTicks) {
     const F32 height = static_cast<F32>(r.extent.height);
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     // A point at view depth w spans 2w / (height * kFovScale) world units per pixel.
     const F32 unitsPerPixelPerDepth = 2.0f / (height * kFovScale);
     const F32 minHalfWidthPerDepth = 0.5f * kMinLineWidthPixels * uiScale * unitsPerPixelPerDepth;
     const F32 aaPaddingPerDepth = (kLineAaPaddingPixels + kLineGlowPixels * uiScale) * unitsPerPixelPerDepth;
-    const Vec3 sun = SunDirection(frameUtcTicks);
+    const Vec3 sun = SunDirection(utcTicks);
     const Vec3 eye = camera.position.xyz;
     return {
-        .view = Antireverse(CameraPose()),
+        .view = Antireverse(CameraPose(camera)),
         .projection = {.scaleX = kFovScale / aspect, .scaleY = -kFovScale, .nearPlane = kNearPlane, .unused = 0.0f},
         .cameraPos = {eye.x, eye.y, eye.z, 1.0f},
         .line = {0.5f * kLineWidthWorld, minHalfWidthPerDepth, aaPaddingPerDepth, uiScale},
@@ -934,7 +932,7 @@ static PushConstants BuildPushConstants() {
     };
 }
 
-static SatellitePush BuildSatellitePush(const PushConstants &scene) {
+static SatellitePush BuildSatellitePush(const Renderer &r, const PushConstants &scene, const F32 uiScale) {
     const F32 height = static_cast<F32>(r.extent.height);
     const F32 aspect = static_cast<F32>(r.extent.width) / height;
     return {
@@ -964,12 +962,12 @@ static bool HiddenByGlobe(const Point3 eye, const Point3 p) {
 }
 
 // Window pixel coordinates of a world point; w <= 0 means behind the camera.
-static Vec4 ProjectToWindow(const PushConstants &scene, const Point3 p) {
+static Vec4 ProjectToWindow(const VkExtent2D extent, const PushConstants &scene, const Point3 p) {
     const Vec4 clip = Project(scene.projection, Transform(scene.view, p));
     const F32 inverseW = clip.w > 0.0f ? 1.0f / clip.w : 0.0f;
     return {
-        (clip.x * inverseW + 1.0f) * 0.5f * static_cast<F32>(r.extent.width),
-        (clip.y * inverseW + 1.0f) * 0.5f * static_cast<F32>(r.extent.height),
+        (clip.x * inverseW + 1.0f) * 0.5f * static_cast<F32>(extent.width),
+        (clip.y * inverseW + 1.0f) * 0.5f * static_cast<F32>(extent.height),
         0.0f,
         clip.w,
     };
@@ -977,23 +975,23 @@ static Vec4 ProjectToWindow(const PushConstants &scene, const Point3 p) {
 
 // Finds the visible satellite or station nearest the cursor, or failing that
 // the nearest visible link, using the frame's own projection.
-static void PickHover(const PushConstants &scene) {
-    hover = {.kind = kHoverNone, .index = 0};
+static Hover PickHover(const VkExtent2D extent, const PushConstants &scene, const Point3 eye, const Input &input,
+                       const Simulation &sim) {
+    Hover hover = {.kind = kHoverNone, .index = 0};
     if (!input.mouseInside || input.hideSatellites) {
-        return;
+        return hover;
     }
-    const Point3 eye = camera.position;
     const F32 mouseX = static_cast<F32>(input.mouseX) + 0.5f;
     const F32 mouseY = static_cast<F32>(input.mouseY) + 0.5f;
 
-    const F32 dotRadius = kPickDotPixels * uiScale;
+    const F32 dotRadius = kPickDotPixels * input.uiScale;
     F32 best = dotRadius * dotRadius;
     for (U32 i = 0; i < kMarkerCount; ++i) {
         const bool satellite = i < kSatelliteCount;
         const Point3 p = WorldFromEcef(satellite
-                                           ? satelliteStates[i].position
-                                           : Support(groundStations[i - kSatelliteCount].horizon).xyz);
-        const Vec4 screen = ProjectToWindow(scene, p);
+                                           ? sim.satelliteStates[i].position
+                                           : Support(sim.groundStations[i - kSatelliteCount].horizon).xyz);
+        const Vec4 screen = ProjectToWindow(extent, scene, p);
         if (screen.w <= 0.0f || HiddenByGlobe(eye, p)) {
             continue;
         }
@@ -1008,16 +1006,16 @@ static void PickHover(const PushConstants &scene) {
         }
     }
     if (hover.kind != kHoverNone) {
-        return;
+        return hover;
     }
 
-    const F32 linkRadius = kPickLinkPixels * uiScale;
+    const F32 linkRadius = kPickLinkPixels * input.uiScale;
     best = linkRadius * linkRadius;
-    for (U32 i = 0; i < linkCount; ++i) {
-        const Point3 p0 = WorldFromEcef(Support(groundStations[links[i].station].horizon).xyz);
-        const Point3 p1 = WorldFromEcef(satelliteStates[links[i].satellite].position);
-        const Vec4 s0 = ProjectToWindow(scene, p0);
-        const Vec4 s1 = ProjectToWindow(scene, p1);
+    for (U32 i = 0; i < sim.linkCount; ++i) {
+        const Point3 p0 = WorldFromEcef(Support(sim.groundStations[sim.links[i].station].horizon).xyz);
+        const Point3 p1 = WorldFromEcef(sim.satelliteStates[sim.links[i].satellite].position);
+        const Vec4 s0 = ProjectToWindow(extent, scene, p0);
+        const Vec4 s1 = ProjectToWindow(extent, scene, p1);
         if (s0.w <= 0.0f || s1.w <= 0.0f) {
             continue;
         }
@@ -1043,25 +1041,27 @@ static void PickHover(const PushConstants &scene) {
         best = dx * dx + dy * dy;
         hover = {.kind = kHoverLink, .index = i};
     }
+    return hover;
 }
 
-static bool DrawFrame() {
+static bool DrawFrame(Renderer &r, TextRenderer &text, const Camera &camera, const Input &input,
+                      const Simulation &sim, const U32 displayedFps) {
     VK_CHECK(vkWaitForFences(r.device, 1, &r.fence, VK_TRUE, kWaitForever));
 
     // The fence guarantees the GPU has finished reading last frame's positions.
     for (U32 i = 0; i < kSatelliteCount; ++i) {
-        WriteMarker(r.satellitePositions[i], satelliteStates[i].position, 0.0f);
+        WriteMarker(r.satellitePositions[i], sim.satelliteStates[i].position, 0.0f);
     }
-    for (U32 i = 0; i < linkCount; ++i) {
-        WriteMarker(r.linkPoints[i][0], Support(groundStations[links[i].station].horizon).xyz, 0.0f);
-        WriteMarker(r.linkPoints[i][1], satelliteStates[links[i].satellite].position, 0.0f);
+    for (U32 i = 0; i < sim.linkCount; ++i) {
+        WriteMarker(r.linkPoints[i][0], Support(sim.groundStations[sim.links[i].station].horizon).xyz, 0.0f);
+        WriteMarker(r.linkPoints[i][1], sim.satelliteStates[sim.links[i].satellite].position, 0.0f);
     }
 
     U32 image;
     const VkResult acquired = vkAcquireNextImageKHR(r.device, r.swapchain, kWaitForever,
                                                     r.acquire, VK_NULL_HANDLE, &image);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-        CreateSwapchain();
+        CreateSwapchain(r);
         return false;
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
@@ -1079,12 +1079,12 @@ static bool DrawFrame() {
 
     // Both the multisampled target and the swapchain image (the resolve
     // destination) start each frame with undefined contents.
-    TransitionImage(r.msaaImage, VK_IMAGE_LAYOUT_UNDEFINED,
+    TransitionImage(r.cmd, r.msaaImage, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    TransitionImage(r.images[image], VK_IMAGE_LAYOUT_UNDEFINED,
+    TransitionImage(r.cmd, r.images[image], VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1112,8 +1112,8 @@ static bool DrawFrame() {
     };
     vkCmdBeginRendering(r.cmd, &rendering);
 
-    const PushConstants push = BuildPushConstants();
-    PickHover(push);
+    const PushConstants push = BuildPushConstants(r, camera, input.uiScale, sim.utcTicks);
+    const Hover hover = PickHover(r.extent, push, camera.position, input, sim);
     vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(push), &push);
     const VkViewport viewport = {
@@ -1132,31 +1132,31 @@ static bool DrawFrame() {
 
     // Links share the scene layout, with their own widths and endpoints. They
     // are drawn after the borders with source-over blending, so they sit on top.
-    if (!input.hideSatellites && linkCount > 0) {
+    if (!input.hideSatellites && sim.linkCount > 0) {
         const F32 unitsPerPixelPerDepth = 2.0f / (static_cast<F32>(r.extent.height) * kFovScale);
         PushConstants linkPush = push;
         linkPush.line[0] = 0.5f * kLinkWidthWorld;
-        linkPush.line[1] = 0.5f * kMinLinkWidthPixels * uiScale * unitsPerPixelPerDepth;
+        linkPush.line[1] = 0.5f * kMinLinkWidthPixels * input.uiScale * unitsPerPixelPerDepth;
         linkPush.vertexBuffer = r.linkAddress;
         vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.linkPipeline);
         vkCmdPushConstants(r.cmd, r.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(linkPush), &linkPush);
-        vkCmdDraw(r.cmd, kVerticesPerSegment * linkCount, kInstanceCount, 0, 0);
+        vkCmdDraw(r.cmd, kVerticesPerSegment * sim.linkCount, kInstanceCount, 0, 0);
     }
 
     if (!input.hideSatellites) {
-        const SatellitePush satellitePush = BuildSatellitePush(push);
+        const SatellitePush satellitePush = BuildSatellitePush(r, push, input.uiScale);
         vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.satellitePipeline);
         vkCmdPushConstants(r.cmd, r.satelliteLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(satellitePush), &satellitePush);
         vkCmdDraw(r.cmd, kVerticesPerSprite * kMarkerCount, kInstanceCount, 0, 0);
     }
 
-    DrawOverlay();
+    DrawOverlay(text, r.cmd, r.extent, input, sim, hover, displayedFps);
 
     vkCmdEndRendering(r.cmd);
 
-    TransitionImage(r.images[image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    TransitionImage(r.cmd, r.images[image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1199,36 +1199,55 @@ static bool DrawFrame() {
     };
     const VkResult presented = vkQueuePresentKHR(r.queue, &present);
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR)
-        CreateSwapchain();
+        CreateSwapchain(r);
     else if (presented != VK_SUCCESS)
         Die("vkQueuePresentKHR", presented);
     return presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
 }
 
+// All of the program's state. main owns it and hands each function only the
+// parts it uses.
+struct App {
+    Platform platform;
+    Input input;
+    Renderer renderer;
+    TextRenderer text;
+    SlugScratch fontScratch; // only used while building the font
+    Camera camera;
+    Simulation simulation;
+};
+
 int main() {
-    CreateAppWindow();
-    InitVulkan();
-    CreateVertexBuffer();
-    CreateSatelliteBuffer();
-    InitConstellation(satelliteStates);
-    InitGroundStations(groundStations);
-    WriteStationMarkers();
-    r.pipelineLayout = CreatePushLayout(sizeof(PushConstants));
-    r.satelliteLayout = CreatePushLayout(sizeof(SatellitePush));
-    r.spherePipeline = CreatePipeline(kSphereVert, sizeof(kSphereVert),
+    // Too big for the stack, so it lives in pages that start zeroed.
+    App &app = *static_cast<App *>(AllocatePages(sizeof(App)));
+    Renderer &r = app.renderer;
+    Simulation &sim = app.simulation;
+    app.camera = kStartCamera;
+    app.input.uiScale = 1.0f;
+    CreateAppWindow(app.platform, app.input);
+    InitVulkan(r, app.platform);
+    CreateVertexBuffer(r);
+    CreateSatelliteBuffer(r);
+    InitConstellation(sim.satelliteStates);
+    InitGroundStations(sim.groundStations);
+    WriteStationMarkers(r, sim.groundStations);
+    r.pipelineLayout = CreatePushLayout(r, sizeof(PushConstants));
+    r.satelliteLayout = CreatePushLayout(r, sizeof(SatellitePush));
+    r.spherePipeline = CreatePipeline(r, kSphereVert, sizeof(kSphereVert),
                                       kSphereFrag, sizeof(kSphereFrag), r.pipelineLayout);
-    r.linePipeline = CreatePipeline(kEarthVert, sizeof(kEarthVert),
+    r.linePipeline = CreatePipeline(r, kEarthVert, sizeof(kEarthVert),
                                     kEarthFrag, sizeof(kEarthFrag), r.pipelineLayout);
-    r.satellitePipeline = CreatePipeline(kSatelliteVert, sizeof(kSatelliteVert),
+    r.satellitePipeline = CreatePipeline(r, kSatelliteVert, sizeof(kSatelliteVert),
                                          kSatelliteFrag, sizeof(kSatelliteFrag), r.satelliteLayout, true);
-    r.linkPipeline = CreatePipeline(kLinkVert, sizeof(kLinkVert),
+    r.linkPipeline = CreatePipeline(r, kLinkVert, sizeof(kLinkVert),
                                     kLinkFrag, sizeof(kLinkFrag), r.pipelineLayout, true);
-    InitText();
+    InitText(r, app.text, app.fontScratch);
 
     const U64 frequency = CounterFrequency();
     U64 lastTime = Counter();
     U64 fpsStart = lastTime;
     U32 fpsFrames = 0;
+    U32 displayedFps = 0;
     // Simulated time starts at the real UTC time. Unlike lastTime, its counter
     // is not reset after a minimize, so the simulation keeps running then too.
     const U64 simulationStartTicks = UtcFileTimeTicks();
@@ -1236,36 +1255,36 @@ int main() {
     U64 simulationClock = lastTime;
 
     for (;;) {
-        if (!PumpEvents()) {
+        if (!PumpEvents(app.platform, app.input)) {
             vkDeviceWaitIdle(r.device);
-            DestroyText();
+            DestroyText(r, app.text);
             return 0;
         }
 
-        if (!WindowVisible()) {
-            WaitForEvents(); // minimized: block instead of spinning
+        if (!WindowVisible(app.platform)) {
+            WaitForEvents(app.platform); // minimized: block instead of spinning
             lastTime = Counter();
             fpsStart = lastTime;
             fpsFrames = 0;
             continue;
         }
-        if (resizePending) {
-            resizePending = false;
-            CreateSwapchain();
+        if (app.input.resizePending) {
+            app.input.resizePending = false;
+            CreateSwapchain(r);
         }
 
         const U64 now = Counter();
         const F32 dt = static_cast<F32>(now - lastTime) / static_cast<F32>(frequency);
         lastTime = now;
-        UpdateCamera(Min(dt, kMaxFrameSeconds));
+        UpdateCamera(app.camera, app.input, Min(dt, kMaxFrameSeconds));
         const F64 realSeconds = static_cast<F64>(now - simulationClock) / static_cast<F64>(frequency);
         simulationClock = now;
-        const F64 simulatedSeconds = realSeconds * TimeRate();
+        const F64 simulatedSeconds = realSeconds * TimeRate(app.input);
         simulationSeconds += simulatedSeconds;
-        PropagateConstellation(satelliteStates, simulatedSeconds);
-        linkCount = FindLinks(groundStations, satelliteStates, links);
-        frameUtcTicks = simulationStartTicks + static_cast<U64>(simulationSeconds * static_cast<F64>(kTicksPerSecond));
-        if (DrawFrame()) {
+        PropagateConstellation(sim.satelliteStates, simulatedSeconds);
+        sim.linkCount = FindLinks(sim.groundStations, sim.satelliteStates, sim.links);
+        sim.utcTicks = simulationStartTicks + static_cast<U64>(simulationSeconds * static_cast<F64>(kTicksPerSecond));
+        if (DrawFrame(r, app.text, app.camera, app.input, sim, displayedFps)) {
             ++fpsFrames;
         }
         const U64 frameEnd = Counter();

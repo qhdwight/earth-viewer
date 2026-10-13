@@ -86,68 +86,65 @@ struct TextRenderer {
     VkPipeline pipeline;
     F32 pixelsPerEm;
     U32 quadCount;
+    SlugFont font;
 };
-
-static TextRenderer textRenderer;
-static SlugFont slugFont;
-// Only used while building slugFont.
-static SlugScratch slugScratch;
 
 // Copies the font from the staging area into device-local memory, where every
 // text pixel reads it many times per frame.
-static void UploadFont(TextHostBuffer &host) {
-    const U64 curveBytes = slugFont.curveTexelCount * sizeof(slugFont.curves[0]);
-    const U64 bandBytes = slugFont.bandEntryCount * sizeof(slugFont.bands[0]);
-    for (U32 i = 0; i < slugFont.curveTexelCount; ++i) {
+static void UploadFont(const Renderer &r, TextRenderer &text) {
+    TextHostBuffer &host = *text.host;
+    const U64 curveBytes = text.font.curveTexelCount * sizeof(text.font.curves[0]);
+    const U64 bandBytes = text.font.bandEntryCount * sizeof(text.font.bands[0]);
+    for (U32 i = 0; i < text.font.curveTexelCount; ++i) {
         for (U32 j = 0; j < 4; ++j) {
-            host.curves[i][j] = slugFont.curves[i][j];
+            host.curves[i][j] = text.font.curves[i][j];
         }
     }
-    for (U32 i = 0; i < slugFont.bandEntryCount; ++i) {
-        host.bands[i][0] = slugFont.bands[i][0];
-        host.bands[i][1] = slugFont.bands[i][1];
+    for (U32 i = 0; i < text.font.bandEntryCount; ++i) {
+        host.bands[i][0] = text.font.bands[i][0];
+        host.bands[i][1] = text.font.bands[i][1];
     }
 
-    const VkBufferCreateInfo bufferInfo = {
+    constexpr VkBufferCreateInfo kBufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = kFontBufferSize,
         .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VK_CHECK(vkCreateBuffer(r.device, &bufferInfo, nullptr, &textRenderer.fontBuffer));
+    VK_CHECK(vkCreateBuffer(r.device, &kBufferInfo, nullptr, &text.fontBuffer));
     VkMemoryRequirements requirements;
-    vkGetBufferMemoryRequirements(r.device, textRenderer.fontBuffer, &requirements);
-    const VkMemoryAllocateFlagsInfo flags = {
+    vkGetBufferMemoryRequirements(r.device, text.fontBuffer, &requirements);
+    constexpr VkMemoryAllocateFlagsInfo kFlags = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
         .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
     };
     const VkMemoryAllocateInfo memoryInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &flags,
+        .pNext = &kFlags,
         .allocationSize = requirements.size,
-        .memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+        .memoryTypeIndex = FindMemoryType(r, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
     };
-    VK_CHECK(vkAllocateMemory(r.device, &memoryInfo, nullptr, &textRenderer.fontMemory));
-    VK_CHECK(vkBindBufferMemory(r.device, textRenderer.fontBuffer, textRenderer.fontMemory, 0));
+    VK_CHECK(vkAllocateMemory(r.device, &memoryInfo, nullptr, &text.fontMemory));
+    VK_CHECK(vkBindBufferMemory(r.device, text.fontBuffer, text.fontMemory, 0));
     const VkBufferDeviceAddressInfo addressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = textRenderer.fontBuffer,
+        .buffer = text.fontBuffer,
     };
-    textRenderer.curveAddress = vkGetBufferDeviceAddress(r.device, &addressInfo);
-    textRenderer.bandAddress = textRenderer.curveAddress + kFontCurveBytes;
+    text.curveAddress = vkGetBufferDeviceAddress(r.device, &addressInfo);
+    text.bandAddress = text.curveAddress + kFontCurveBytes;
 
-    const VkCommandBufferBeginInfo begin = {
+    constexpr VkCommandBufferBeginInfo kBegin = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    VK_CHECK(vkBeginCommandBuffer(r.cmd, &begin));
+    VK_CHECK(vkBeginCommandBuffer(r.cmd, &kBegin));
     const VkBufferCopy copies[] = {
         {.srcOffset = kTextUploadOffset, .dstOffset = 0, .size = curveBytes},
         {.srcOffset = kTextUploadOffset + kFontCurveBytes, .dstOffset = kFontCurveBytes, .size = bandBytes},
     };
-    vkCmdCopyBuffer(r.cmd, textRenderer.buffer, textRenderer.fontBuffer, static_cast<U32>(Count(copies)), copies);
+    vkCmdCopyBuffer(r.cmd, text.buffer, text.fontBuffer, static_cast<U32>(Count(copies)), copies);
     // Make the copy visible to the shader reads of every later submission.
-    const VkMemoryBarrier2 barrier = {
+    constexpr VkMemoryBarrier2 kBarrier = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -157,7 +154,7 @@ static void UploadFont(TextHostBuffer &host) {
     const VkDependencyInfo dependency = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .memoryBarrierCount = 1,
-        .pMemoryBarriers = &barrier,
+        .pMemoryBarriers = &kBarrier,
     };
     vkCmdPipelineBarrier2(r.cmd, &dependency);
     VK_CHECK(vkEndCommandBuffer(r.cmd));
@@ -175,51 +172,51 @@ static F32 RoundPixels(const F32 value);
 
 // Text and panel sizes are in UI pixels; the result is rounded to whole
 // physical pixels so baselines, cap heights and panel edges stay on the grid.
-static F32 UiPixels(const F32 value) {
+static F32 UiPixels(const F32 value, const F32 uiScale) {
     return RoundPixels(value * uiScale);
 }
 
-static void InitText() {
-    BuildSlugFont(slugFont, slugScratch);
+static void InitText(const Renderer &r, TextRenderer &text, SlugScratch &fontScratch) {
+    BuildSlugFont(text.font, fontScratch);
 
-    const VkBufferCreateInfo bufferInfo = {
+    constexpr VkBufferCreateInfo kBufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = kTextBufferSize,
         .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VK_CHECK(vkCreateBuffer(r.device, &bufferInfo, nullptr, &textRenderer.buffer));
+    VK_CHECK(vkCreateBuffer(r.device, &kBufferInfo, nullptr, &text.buffer));
     VkMemoryRequirements requirements;
-    vkGetBufferMemoryRequirements(r.device, textRenderer.buffer, &requirements);
-    const VkMemoryAllocateFlagsInfo flags = {
+    vkGetBufferMemoryRequirements(r.device, text.buffer, &requirements);
+    constexpr VkMemoryAllocateFlagsInfo kFlags = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
         .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
     };
     const VkMemoryAllocateInfo bufferMemory = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &flags,
+        .pNext = &kFlags,
         .allocationSize = requirements.size,
-        .memoryTypeIndex = FindMemoryType(requirements.memoryTypeBits,
+        .memoryTypeIndex = FindMemoryType(r, requirements.memoryTypeBits,
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
     };
-    VK_CHECK(vkAllocateMemory(r.device, &bufferMemory, nullptr, &textRenderer.bufferMemory));
-    VK_CHECK(vkBindBufferMemory(r.device, textRenderer.buffer, textRenderer.bufferMemory, 0));
+    VK_CHECK(vkAllocateMemory(r.device, &bufferMemory, nullptr, &text.bufferMemory));
+    VK_CHECK(vkBindBufferMemory(r.device, text.buffer, text.bufferMemory, 0));
     void *mapped;
-    VK_CHECK(vkMapMemory(r.device, textRenderer.bufferMemory, 0, kTextBufferSize, 0, &mapped));
-    textRenderer.host = static_cast<TextHostBuffer *>(mapped);
+    VK_CHECK(vkMapMemory(r.device, text.bufferMemory, 0, kTextBufferSize, 0, &mapped));
+    text.host = static_cast<TextHostBuffer *>(mapped);
     const VkBufferDeviceAddressInfo addressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = textRenderer.buffer,
+        .buffer = text.buffer,
     };
-    textRenderer.address = vkGetBufferDeviceAddress(r.device, &addressInfo);
+    text.address = vkGetBufferDeviceAddress(r.device, &addressInfo);
     constexpr U16 kCorners[6] = {0, 1, 2, 2, 1, 3};
     for (U32 i = 0; i < kTextMaxQuads; ++i) {
         for (U32 j = 0; j < 6; ++j) {
-            textRenderer.host->quadIndices[i][j] = static_cast<U16>(i * 4 + kCorners[j]);
+            text.host->quadIndices[i][j] = static_cast<U16>(i * 4 + kCorners[j]);
         }
     }
-    UploadFont(*textRenderer.host);
+    UploadFont(r, text);
 
     // Both stages read push constants: the vertex shader the vertex buffer,
     // the fragment shader the curve and band buffers.
@@ -233,9 +230,8 @@ static void InitText() {
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &kRange,
     };
-    VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &textRenderer.layout));
-    textRenderer.pipeline = CreatePipeline(kTextVert, sizeof(kTextVert),
-                                           kTextFrag, sizeof(kTextFrag), textRenderer.layout, true);
+    VK_CHECK(vkCreatePipelineLayout(r.device, &layoutInfo, nullptr, &text.layout));
+    text.pipeline = CreatePipeline(r, kTextVert, sizeof(kTextVert), kTextFrag, sizeof(kTextFrag), text.layout, true);
 }
 
 static F32 RoundPixels(const F32 value) {
@@ -259,12 +255,12 @@ static F32 AdvancePixels(const SlugGlyph &glyph, const F32 pixelsPerEm) {
 // One quad over the glyph's em-space bounds, origin at (penX, baseline) in
 // pixels. Corners go top left, top right, bottom left, bottom right; text.vert
 // dilates them outward by half a pixel along their normals.
-static bool AppendGlyph(const SlugGlyph &glyph, const F32 penX, const F32 baseline, const F32 pixelsPerEm,
-                        const F32 (&color)[4]) {
-    if (textRenderer.quadCount == kTextMaxQuads) {
+static bool AppendGlyph(TextRenderer &text, const SlugGlyph &glyph, const F32 penX, const F32 baseline,
+                        const F32 pixelsPerEm, const F32 (&color)[4]) {
+    if (text.quadCount == kTextMaxQuads) {
         return false;
     }
-    TextVertex (&vertices)[4] = textRenderer.host->quads[textRenderer.quadCount++];
+    TextVertex (&vertices)[4] = text.host->quads[text.quadCount++];
     const F32 emPerPixel = 1.0f / pixelsPerEm;
     for (U32 corner = 0; corner < 4; ++corner) {
         const bool right = (corner & 1) != 0;
@@ -289,11 +285,12 @@ static bool AppendGlyph(const SlugGlyph &glyph, const F32 penX, const F32 baseli
 }
 
 // A solid rectangle in the text batch, for panels behind text.
-static bool AppendSolidQuad(const F32 x, const F32 y, const F32 width, const F32 height, const F32 (&color)[4]) {
-    if (textRenderer.quadCount == kTextMaxQuads) {
+static bool AppendSolidQuad(TextRenderer &text, const F32 x, const F32 y, const F32 width, const F32 height,
+                            const F32 (&color)[4]) {
+    if (text.quadCount == kTextMaxQuads) {
         return false;
     }
-    TextVertex (&vertices)[4] = textRenderer.host->quads[textRenderer.quadCount++];
+    TextVertex (&vertices)[4] = text.host->quads[text.quadCount++];
     for (U32 corner = 0; corner < 4; ++corner) {
         vertices[corner] = {
             .pos = {(corner & 1) != 0 ? x + width : x, (corner & 2) != 0 ? y + height : y, 0.0f, 0.0f},
@@ -306,22 +303,23 @@ static bool AppendSolidQuad(const F32 x, const F32 y, const F32 width, const F32
 
 // (x, y) is the top left of the first line. Returns false on batch
 // exhaustion. Unsupported bytes use a '?' glyph.
-static bool AppendText(const char *string, const F32 x, const F32 y, const F32 scale = 1.0f) {
+static bool AppendText(TextRenderer &text, const F32 uiScale, const char *string, const F32 x, const F32 y,
+                       const F32 scale = 1.0f) {
     // Phosphor green, like the terminals of the era.
     constexpr F32 kTextColor[4] = {0.45f, 1.0f, 0.55f, 1.0f};
-    const F32 pixelsPerEm = textRenderer.pixelsPerEm * scale;
+    const F32 pixelsPerEm = text.pixelsPerEm * scale;
     F32 penX = x;
     F32 lineTop = y;
     for (; *string != '\0'; ++string) {
         const U8 character = static_cast<U8>(*string);
         if (character == '\n') {
             penX = x;
-            lineTop += UiPixels(kLineHeight) * scale;
+            lineTop += UiPixels(kLineHeight, uiScale) * scale;
             continue;
         }
-        const SlugGlyph &glyph = slugFont.glyphs[GlyphIndex(character)];
-        const F32 baseline = RoundPixels(lineTop + slugFont.ascent * pixelsPerEm);
-        if (glyph.curveCount > 0 && !AppendGlyph(glyph, penX, baseline, pixelsPerEm, kTextColor)) {
+        const SlugGlyph &glyph = text.font.glyphs[GlyphIndex(character)];
+        const F32 baseline = RoundPixels(lineTop + text.font.ascent * pixelsPerEm);
+        if (glyph.curveCount > 0 && !AppendGlyph(text, glyph, penX, baseline, pixelsPerEm, kTextColor)) {
             return false;
         }
         penX += AdvancePixels(glyph, pixelsPerEm);
@@ -329,18 +327,18 @@ static bool AppendText(const char *string, const F32 x, const F32 y, const F32 s
     return true;
 }
 
-static void DestroyText() {
-    vkDestroyPipeline(r.device, textRenderer.pipeline, nullptr);
-    vkDestroyPipelineLayout(r.device, textRenderer.layout, nullptr);
-    vkDestroyBuffer(r.device, textRenderer.fontBuffer, nullptr);
-    vkFreeMemory(r.device, textRenderer.fontMemory, nullptr);
-    vkUnmapMemory(r.device, textRenderer.bufferMemory);
-    vkDestroyBuffer(r.device, textRenderer.buffer, nullptr);
-    vkFreeMemory(r.device, textRenderer.bufferMemory, nullptr);
+static void DestroyText(const Renderer &r, const TextRenderer &text) {
+    vkDestroyPipeline(r.device, text.pipeline, nullptr);
+    vkDestroyPipelineLayout(r.device, text.layout, nullptr);
+    vkDestroyBuffer(r.device, text.fontBuffer, nullptr);
+    vkFreeMemory(r.device, text.fontMemory, nullptr);
+    vkUnmapMemory(r.device, text.bufferMemory);
+    vkDestroyBuffer(r.device, text.buffer, nullptr);
+    vkFreeMemory(r.device, text.bufferMemory, nullptr);
 }
 
 // Widest line of a string in pixels at scale 1, matching AppendText's layout.
-static F32 TextWidth(const char *string) {
+static F32 TextWidth(const TextRenderer &text, const char *string) {
     F32 widest = 0.0f;
     F32 width = 0.0f;
     for (; *string != '\0'; ++string) {
@@ -350,37 +348,39 @@ static F32 TextWidth(const char *string) {
             width = 0.0f;
             continue;
         }
-        width += AdvancePixels(slugFont.glyphs[GlyphIndex(character)], textRenderer.pixelsPerEm);
+        width += AdvancePixels(text.font.glyphs[GlyphIndex(character)], text.pixelsPerEm);
     }
     return Max(widest, width);
 }
 
 constexpr U32 kClockLines = 4;
 
-static void AppendPanel(const F32 x, const F32 y, const F32 width, const F32 height) {
+static void AppendPanel(TextRenderer &text, const F32 uiScale, const F32 x, const F32 y, const F32 width,
+                        const F32 height) {
     constexpr F32 kPanelColor[4] = {0.0f, 0.01f, 0.015f, 0.85f};
     constexpr F32 kOutlineColor[4] = {0.05f, 0.45f, 0.6f, 1.0f};
-    AppendSolidQuad(x, y, width, height, kPanelColor);
+    AppendSolidQuad(text, x, y, width, height, kPanelColor);
     // A thin outline, top, bottom, left, right, inside the panel's bounds.
-    const F32 t = UiPixels(1.0f);
-    AppendSolidQuad(x, y, width, t, kOutlineColor);
-    AppendSolidQuad(x, y + height - t, width, t, kOutlineColor);
-    AppendSolidQuad(x, y + t, t, height - 2.0f * t, kOutlineColor);
-    AppendSolidQuad(x + width - t, y + t, t, height - 2.0f * t, kOutlineColor);
+    const F32 t = UiPixels(1.0f, uiScale);
+    AppendSolidQuad(text, x, y, width, t, kOutlineColor);
+    AppendSolidQuad(text, x, y + height - t, width, t, kOutlineColor);
+    AppendSolidQuad(text, x, y + t, t, height - 2.0f * t, kOutlineColor);
+    AppendSolidQuad(text, x + width - t, y + t, t, height - 2.0f * t, kOutlineColor);
 }
 
-static void AppendClock() {
-    const I64 utc = UnixSecondsFromFileTime(frameUtcTicks);
+static void AppendClock(TextRenderer &text, const F32 uiScale, const VkExtent2D extent, const U64 utcTicks,
+                        const F64 timeRate) {
+    const I64 utc = UnixSecondsFromFileTime(utcTicks);
     const bool daylight = IsPacificDaylightTime(utc);
     const CivilTime pacific = CivilFromUnixSeconds(utc + (daylight ? kPacificDaylightOffset : kPacificStandardOffset));
     const CivilTime universal = CivilFromUnixSeconds(utc);
     const I64 gps = GpsSecondsFromUnix(utc);
     // The simulation rate, set with [ and ].
     char rate[16];
-    if (TimeRate() == 0.0) {
+    if (timeRate == 0.0) {
         snprintf(rate, sizeof(rate), "paused");
     } else {
-        snprintf(rate, sizeof(rate), "%gx", TimeRate());
+        snprintf(rate, sizeof(rate), "%gx", timeRate);
     }
     char label[160];
     snprintf(label, sizeof(label),
@@ -392,11 +392,12 @@ static void AppendClock() {
              pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute, pacific.second,
              universal.year, universal.month, universal.day, universal.hour, universal.minute, universal.second,
              gps, gps / kSecondsPerWeek, gps % kSecondsPerWeek, rate);
-    const F32 width = TextWidth(label) + 2.0f * UiPixels(kPanelPadding);
-    const F32 height = kClockLines * UiPixels(kLineHeight) + 2.0f * UiPixels(kPanelPadding);
-    const F32 x = static_cast<F32>(r.extent.width) - UiPixels(kPanelMargin) - width;
-    AppendPanel(x, UiPixels(kPanelMargin), width, height);
-    AppendText(label, x + UiPixels(kPanelPadding), UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
+    const F32 width = TextWidth(text, label) + 2.0f * UiPixels(kPanelPadding, uiScale);
+    const F32 height = kClockLines * UiPixels(kLineHeight, uiScale) + 2.0f * UiPixels(kPanelPadding, uiScale);
+    const F32 x = static_cast<F32>(extent.width) - UiPixels(kPanelMargin, uiScale) - width;
+    AppendPanel(text, uiScale, x, UiPixels(kPanelMargin, uiScale), width, height);
+    AppendText(text, uiScale, label, x + UiPixels(kPanelPadding, uiScale),
+               UiPixels(kPanelMargin, uiScale) + UiPixels(kPanelPadding, uiScale));
 }
 
 // Writes a satellite's or station's ECEF state and WGS 84 position. Stations
@@ -424,62 +425,67 @@ static void FormatStateLabel(char (&label)[kHoverLabelBytes], const char *const 
 
 // Names what the cursor is over, beside the cursor and kept inside the window.
 // Links are named by their ends: their indices change every frame.
-static void AppendHoverLabel() {
+static void AppendHoverLabel(TextRenderer &text, const F32 uiScale, const VkExtent2D extent, const Input &input,
+                             const Simulation &sim, const Hover hover) {
     if (hover.kind == kHoverNone) {
         return;
     }
     char label[kHoverLabelBytes];
     if (hover.kind == kHoverSatellite) {
-        const OrbitState &state = satelliteStates[hover.index];
+        const OrbitState &state = sim.satelliteStates[hover.index];
         FormatStateLabel(label, "Satellite", hover.index, state.position, &state.velocity);
     } else if (hover.kind == kHoverStation) {
         FormatStateLabel(label, "Ground station", hover.index,
-                         Support(groundStations[hover.index].horizon).xyz, nullptr);
+                         Support(sim.groundStations[hover.index].horizon).xyz, nullptr);
     } else {
         snprintf(label, sizeof(label), "Link: ground station #%u to satellite #%u",
-                 static_cast<U32>(links[hover.index].station), static_cast<U32>(links[hover.index].satellite));
+                 static_cast<U32>(sim.links[hover.index].station),
+                 static_cast<U32>(sim.links[hover.index].satellite));
     }
     U32 lines = 1;
     for (const char *c = label; *c != '\0'; ++c) {
         lines += *c == '\n' ? 1 : 0;
     }
-    const F32 padding = UiPixels(kPanelPadding);
-    const F32 offset = UiPixels(kHoverOffset);
-    const F32 width = TextWidth(label) + 2.0f * padding;
-    const F32 height = static_cast<F32>(lines) * UiPixels(kLineHeight) + 2.0f * padding;
+    const F32 padding = UiPixels(kPanelPadding, uiScale);
+    const F32 offset = UiPixels(kHoverOffset, uiScale);
+    const F32 width = TextWidth(text, label) + 2.0f * padding;
+    const F32 height = static_cast<F32>(lines) * UiPixels(kLineHeight, uiScale) + 2.0f * padding;
     const F32 mouseX = static_cast<F32>(input.mouseX);
     const F32 mouseY = static_cast<F32>(input.mouseY);
-    const F32 x = mouseX + offset + width <= static_cast<F32>(r.extent.width)
+    const F32 x = mouseX + offset + width <= static_cast<F32>(extent.width)
                       ? mouseX + offset
                       : mouseX - offset - width;
-    const F32 y = mouseY + offset + height <= static_cast<F32>(r.extent.height)
+    const F32 y = mouseY + offset + height <= static_cast<F32>(extent.height)
                       ? mouseY + offset
                       : mouseY - offset - height;
-    AppendPanel(x, y, width, height);
-    AppendText(label, x + padding, y + padding);
+    AppendPanel(text, uiScale, x, y, width, height);
+    AppendText(text, uiScale, label, x + padding, y + padding);
 }
 
-static void DrawOverlay() {
+static void DrawOverlay(TextRenderer &text, const VkCommandBuffer cmd, const VkExtent2D extent, const Input &input,
+                        const Simulation &sim, const Hover hover, const U32 displayedFps) {
+    const F32 uiScale = input.uiScale;
     // The UI scale changes when the window moves to another monitor.
-    textRenderer.pixelsPerEm = UiPixels(kTextCapHeightPixels) / slugFont.capHeight;
-    textRenderer.quadCount = 0;
+    text.pixelsPerEm = UiPixels(kTextCapHeightPixels, uiScale) / text.font.capHeight;
+    text.quadCount = 0;
     char label[11];
     snprintf(label, sizeof(label), "FPS: %u", displayedFps);
-    AppendPanel(UiPixels(kPanelMargin), UiPixels(kPanelMargin), UiPixels(kFpsPanelWidth), UiPixels(kFpsPanelHeight));
-    AppendText(label,
-               UiPixels(kPanelMargin) + UiPixels(kPanelPadding),
-               UiPixels(kPanelMargin) + UiPixels(kPanelPadding));
-    AppendClock();
-    AppendHoverLabel();
+    AppendPanel(text, uiScale, UiPixels(kPanelMargin, uiScale), UiPixels(kPanelMargin, uiScale),
+                UiPixels(kFpsPanelWidth, uiScale), UiPixels(kFpsPanelHeight, uiScale));
+    AppendText(text, uiScale, label,
+               UiPixels(kPanelMargin, uiScale) + UiPixels(kPanelPadding, uiScale),
+               UiPixels(kPanelMargin, uiScale) + UiPixels(kPanelPadding, uiScale));
+    AppendClock(text, uiScale, extent, sim.utcTicks, TimeRate(input));
+    AppendHoverLabel(text, uiScale, extent, input, sim, hover);
     const TextPush push = {
-        .viewport = {static_cast<F32>(r.extent.width), static_cast<F32>(r.extent.height)},
-        .vertices = textRenderer.address,
-        .curves = textRenderer.curveAddress,
-        .bands = textRenderer.bandAddress,
+        .viewport = {static_cast<F32>(extent.width), static_cast<F32>(extent.height)},
+        .vertices = text.address,
+        .curves = text.curveAddress,
+        .bands = text.bandAddress,
     };
-    vkCmdBindPipeline(r.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, textRenderer.pipeline);
-    vkCmdPushConstants(r.cmd, textRenderer.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, text.pipeline);
+    vkCmdPushConstants(cmd, text.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
-    vkCmdBindIndexBuffer(r.cmd, textRenderer.buffer, kTextIndexOffset, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(r.cmd, textRenderer.quadCount * 6, 1, 0, 0, 0);
+    vkCmdBindIndexBuffer(cmd, text.buffer, kTextIndexOffset, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(cmd, text.quadCount * 6, 1, 0, 0, 0);
 }

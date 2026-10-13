@@ -73,7 +73,7 @@ inline void SlugBeginContour(SlugFont &font, SlugGlyphBuilder &builder, const F3
     if (font.curveTexelCount + 1 > kSlugMaxCurveTexels) {
         Die("Slug curve storage", font.curveTexelCount);
     }
-    F32 *const texel = font.curves[font.curveTexelCount];
+    F32 (&texel)[4] = font.curves[font.curveTexelCount];
     texel[0] = x;
     texel[1] = y;
     texel[2] = 0.0f;
@@ -105,7 +105,7 @@ inline void SlugAddCurve(SlugFont &font, SlugGlyphBuilder &builder, const F32 x2
         .maxY = Max(Max(y1, y2), y3),
     };
     font.curveTexelCount += 1;
-    F32 *const next = font.curves[font.curveTexelCount];
+    F32 (&next)[4] = font.curves[font.curveTexelCount];
     next[0] = x3;
     next[1] = y3;
     next[2] = 0.0f;
@@ -260,6 +260,12 @@ inline void SlugFinishGlyph(SlugFont &font, SlugGlyph &glyph, const SlugGlyphBui
 
 #if defined(_WIN32)
 
+// Working memory for BuildSlugFont, owned by the caller.
+struct SlugScratch {
+    U8 outline[kSlugOutlineBytes];
+    SlugGlyphBuilder builder;
+};
+
 inline F32 SlugFixedToEm(const FIXED value) {
     return (static_cast<F32>(value.value) + static_cast<F32>(value.fract) * (1.0f / 65536.0f)) /
            static_cast<F32>(kSlugOutlineEm);
@@ -268,7 +274,8 @@ inline F32 SlugFixedToEm(const FIXED value) {
 // Decodes a GGO_NATIVE outline. TrueType contours are lines and quadratic
 // B-splines; in a spline, the on-curve point between two consecutive
 // off-curve points is implied at their midpoint.
-inline void SlugDecodeOutline(SlugFont &font, SlugGlyphBuilder &builder, const U8 *const outline, const U32 size) {
+inline void SlugDecodeOutline(SlugFont &font, SlugGlyphBuilder &builder, const U8 (&outline)[kSlugOutlineBytes],
+                              const U32 size) {
     const U8 *cursor = outline;
     while (cursor < outline + size) {
         const TTPOLYGONHEADER *const header = reinterpret_cast<const TTPOLYGONHEADER *>(cursor);
@@ -312,7 +319,7 @@ inline void SlugDecodeOutline(SlugFont &font, SlugGlyphBuilder &builder, const U
 
 // Extracts printable ASCII from Consolas as unhinted TrueType outlines in em
 // units, with the baseline at y = 0 and y pointing up.
-inline void BuildSlugFont(SlugFont &font) {
+inline void BuildSlugFont(SlugFont &font, SlugScratch &scratch) {
     const HDC dc = CreateCompatibleDC(nullptr);
     const HFONT handle = CreateFontW(-kSlugOutlineEm, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
                                      OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
@@ -328,8 +335,8 @@ inline void BuildSlugFont(SlugFont &font) {
     font.ascent = static_cast<F32>(metrics.tmAscent) / static_cast<F32>(kSlugOutlineEm);
 
     constexpr MAT2 kIdentity = {.eM11 = {.fract = 0, .value = 1}, .eM22 = {.fract = 0, .value = 1}};
-    static U8 outline[kSlugOutlineBytes];
-    static SlugGlyphBuilder builder;
+    U8 (&outline)[kSlugOutlineBytes] = scratch.outline;
+    SlugGlyphBuilder &builder = scratch.builder;
     for (U32 i = 0; i < kSlugGlyphCount; ++i) {
         const UINT character = kSlugFirstChar + i;
         GLYPHMETRICS glyphMetrics;
@@ -355,6 +362,11 @@ inline void BuildSlugFont(SlugFont &font) {
 }
 
 #elif defined(__APPLE__)
+
+// Working memory for BuildSlugFont, owned by the caller.
+struct SlugScratch {
+    SlugGlyphBuilder builder;
+};
 
 // Core Text reports a glyph's path one element at a time; this carries the
 // contour being built between calls.
@@ -404,14 +416,14 @@ inline void SlugAddPathElement(void *const info, const CGPathElement *const elem
 
 // Extracts printable ASCII from Menlo as unhinted TrueType outlines in em
 // units, with the baseline at y = 0 and y pointing up.
-inline void BuildSlugFont(SlugFont &font) {
+inline void BuildSlugFont(SlugFont &font, SlugScratch &scratch) {
     const CTFontRef handle = CTFontCreateWithName(CFSTR("Menlo"), static_cast<CGFloat>(kSlugOutlineEm), nullptr);
     if (!handle) {
         Die("creating the outline font", 0);
     }
     font.ascent = static_cast<F32>(CTFontGetAscent(handle)) / static_cast<F32>(kSlugOutlineEm);
 
-    static SlugGlyphBuilder builder;
+    SlugGlyphBuilder &builder = scratch.builder;
     for (U32 i = 0; i < kSlugGlyphCount; ++i) {
         const UniChar character = static_cast<UniChar>(kSlugFirstChar + i);
         CGGlyph glyphIndex;
@@ -476,7 +488,7 @@ inline constexpr U32 kSlugHaveTwoByTwo = 0x0080;
 
 // Byte offsets of the tables a glyph needs, into the font file.
 struct SlugTrueType {
-    const U8 *file;
+    const U8 (&file)[kSlugMaxFontBytes];
     U32 glyf, loca, hmtx, cmap; // cmap is the format 4 subtable
     U32 hMetricCount;
     bool longLoca;
@@ -487,11 +499,25 @@ struct SlugTransform {
     F32 xx, xy, yx, yy, dx, dy;
 };
 
+// One simple glyph's points, read in font units and then moved to em.
+struct SlugGlyphPoints {
+    U8 flags[kSlugMaxGlyphPoints];
+    F32 xs[kSlugMaxGlyphPoints];
+    F32 ys[kSlugMaxGlyphPoints];
+};
+
+// Working memory for BuildSlugFont, owned by the caller.
+struct SlugScratch {
+    U8 file[kSlugMaxFontBytes];
+    SlugGlyphPoints points;
+    SlugGlyphBuilder builder;
+};
+
 inline U32 SlugReadU16(const U8 *const p) { return static_cast<U32>(p[0]) << 8 | p[1]; }
 inline I32 SlugReadI16(const U8 *const p) { return static_cast<I16>(SlugReadU16(p)); }
 inline U32 SlugReadU32(const U8 *const p) { return SlugReadU16(p) << 16 | SlugReadU16(p + 2); }
 
-inline U32 SlugFindTable(const U8 *const file, const U32 size, char const *const tag) {
+inline U32 SlugFindTable(const U8 (&file)[kSlugMaxFontBytes], const U32 size, const char (&tag)[5]) {
     const U32 tableCount = SlugReadU16(file + 4);
     if (12 + 16 * tableCount > size) {
         Die("reading the font's table directory", tableCount);
@@ -510,7 +536,7 @@ inline U32 SlugFindTable(const U8 *const file, const U32 size, char const *const
 }
 
 // The Unicode BMP mapping, which covers ASCII.
-inline U32 SlugFindCharacterMap(const U8 *const file, const U32 cmap) {
+inline U32 SlugFindCharacterMap(const U8 (&file)[kSlugMaxFontBytes], const U32 cmap) {
     const U32 recordCount = SlugReadU16(file + cmap + 2);
     for (U32 i = 0; i < recordCount; ++i) {
         const U8 *const record = file + cmap + 4 + 8 * i;
@@ -562,8 +588,11 @@ inline U32 SlugGlyphOffset(const SlugTrueType &font, const U32 glyph) {
 // consecutive off-curve points the on-curve point is implied at their
 // midpoint, so the contour starts on a real on-curve point at either end, or
 // else on the implied one between the ends.
-inline void SlugDecodeContour(SlugFont &font, SlugGlyphBuilder &builder, const F32 *const xs, const F32 *const ys,
-                              const U8 *const flags, const U32 first, const U32 last) {
+inline void SlugDecodeContour(SlugFont &font, SlugGlyphBuilder &builder, const SlugGlyphPoints &points,
+                              const U32 first, const U32 last) {
+    const U8 (&flags)[kSlugMaxGlyphPoints] = points.flags;
+    const F32 (&xs)[kSlugMaxGlyphPoints] = points.xs;
+    const F32 (&ys)[kSlugMaxGlyphPoints] = points.ys;
     const bool firstOn = (flags[first] & kSlugOnCurve) != 0;
     const bool lastOn = (flags[last] & kSlugOnCurve) != 0;
     const U32 start = firstOn ? first : last;
@@ -602,9 +631,10 @@ inline void SlugDecodeContour(SlugFont &font, SlugGlyphBuilder &builder, const F
 }
 
 // Adds a glyph's contours. Composite glyphs place other glyphs, each under
-// its own transform.
-inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const SlugTrueType &trueType,
-                            const U32 glyph, const SlugTransform &transform, const U32 depth) {
+// its own transform, one after another through the same points.
+inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, SlugGlyphPoints &points,
+                            const SlugTrueType &trueType, const U32 glyph, const SlugTransform &transform,
+                            const U32 depth) {
     const U32 offset = SlugGlyphOffset(trueType, glyph);
     if (offset == SlugGlyphOffset(trueType, glyph + 1)) {
         return; // blank, such as space
@@ -654,7 +684,7 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
                 .dx = t.xx * dx + t.yx * dy + t.dx,
                 .dy = t.xy * dx + t.yy * dy + t.dy,
             };
-            SlugDecodeGlyph(font, builder, trueType, component, combined, depth + 1);
+            SlugDecodeGlyph(font, builder, points, trueType, component, combined, depth + 1);
         }
         return;
     }
@@ -669,7 +699,7 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
     }
     const U8 *cursor = endPoints + 2 * contourCount;
     cursor += 2 + SlugReadU16(cursor); // hinting instructions
-    static U8 flags[kSlugMaxGlyphPoints];
+    U8 (&flags)[kSlugMaxGlyphPoints] = points.flags;
     for (U32 i = 0; i < pointCount;) {
         const U8 flag = *cursor++;
         const U32 repeats = (flag & kSlugRepeat) != 0 ? *cursor++ : 0;
@@ -679,8 +709,6 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
     }
     // Coordinates are deltas from the previous point: a byte with the sign in
     // the flags, the same as before, or a signed word.
-    static I32 unitsX[kSlugMaxGlyphPoints];
-    static I32 unitsY[kSlugMaxGlyphPoints];
     I32 x = 0;
     for (U32 i = 0; i < pointCount; ++i) {
         if ((flags[i] & kSlugXShort) != 0) {
@@ -690,7 +718,7 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
             x += SlugReadI16(cursor);
             cursor += 2;
         }
-        unitsX[i] = x;
+        points.xs[i] = static_cast<F32>(x);
     }
     I32 y = 0;
     for (U32 i = 0; i < pointCount; ++i) {
@@ -701,15 +729,13 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
             y += SlugReadI16(cursor);
             cursor += 2;
         }
-        unitsY[i] = y;
+        points.ys[i] = static_cast<F32>(y);
     }
-    static F32 xs[kSlugMaxGlyphPoints];
-    static F32 ys[kSlugMaxGlyphPoints];
     for (U32 i = 0; i < pointCount; ++i) {
-        const F32 fx = static_cast<F32>(unitsX[i]);
-        const F32 fy = static_cast<F32>(unitsY[i]);
-        xs[i] = transform.xx * fx + transform.yx * fy + transform.dx;
-        ys[i] = transform.xy * fx + transform.yy * fy + transform.dy;
+        const F32 fx = points.xs[i];
+        const F32 fy = points.ys[i];
+        points.xs[i] = transform.xx * fx + transform.yx * fy + transform.dx;
+        points.ys[i] = transform.xy * fx + transform.yy * fy + transform.dy;
     }
 
     U32 first = 0;
@@ -718,15 +744,15 @@ inline void SlugDecodeGlyph(SlugFont &font, SlugGlyphBuilder &builder, const Slu
         if (last < first || last >= pointCount) {
             Die("reading a glyph contour", c);
         }
-        SlugDecodeContour(font, builder, xs, ys, flags, first, last);
+        SlugDecodeContour(font, builder, points, first, last);
         first = last + 1;
     }
 }
 
 // Extracts printable ASCII from the first font found as unhinted TrueType
 // outlines in em units, with the baseline at y = 0 and y pointing up.
-inline void BuildSlugFont(SlugFont &font) {
-    static U8 file[kSlugMaxFontBytes];
+inline void BuildSlugFont(SlugFont &font, SlugScratch &scratch) {
+    U8 (&file)[kSlugMaxFontBytes] = scratch.file;
     FILE *stream = nullptr;
     for (U32 i = 0; i < Count(kSlugFontPaths) && !stream; ++i) {
         stream = fopen(kSlugFontPaths[i], "rb");
@@ -760,7 +786,7 @@ inline void BuildSlugFont(SlugFont &font) {
     font.ascent = static_cast<F32>(SlugReadI16(file + hhea + 4)) * emPerUnit;
 
     const SlugTransform toEm = {.xx = emPerUnit, .yy = emPerUnit};
-    static SlugGlyphBuilder builder;
+    SlugGlyphBuilder &builder = scratch.builder;
     for (U32 i = 0; i < kSlugGlyphCount; ++i) {
         const U32 character = kSlugFirstChar + i;
         const U32 glyph = SlugGlyphIndex(trueType, character);
@@ -768,7 +794,7 @@ inline void BuildSlugFont(SlugFont &font) {
             Die("finding a glyph", character);
         }
         builder.curveCount = 0;
-        SlugDecodeGlyph(font, builder, trueType, glyph, toEm, 0);
+        SlugDecodeGlyph(font, builder, scratch.points, trueType, glyph, toEm, 0);
         // Glyphs past the last metric share its advance.
         const U32 metric = Min(glyph, trueType.hMetricCount - 1);
         SlugFinishGlyph(font, font.glyphs[i], builder,

@@ -38,7 +38,7 @@ inline constexpr U32 kSatelliteCount = CountSatellites();
 // The constellation is synthetic, so its orientation is arbitrary: the
 // inertial frame is taken to coincide with ECEF at the start. Positions then
 // agree, and only the velocity changes, by the Earth's rotation w x p.
-inline void InitConstellation(OrbitState *const states) {
+inline void InitConstellation(OrbitState (&states)[kSatelliteCount]) {
     const F64 radius = kEarthRadius + kSatelliteAltitude;
     const F64 speed = Sqrt(kEarthMu / radius);
     const F64 w = kEarthRotationRate;
@@ -79,8 +79,8 @@ inline void InitConstellation(OrbitState *const states) {
     }
 }
 
-inline void PropagateConstellation(OrbitState *const states, const U32 count, const F64 seconds) {
-    for (U32 i = 0; i < count; ++i) {
-        states[i] = PropagateJ2(states[i], seconds);
+inline void PropagateConstellation(OrbitState (&states)[kSatelliteCount], const F64 seconds) {
+    for (OrbitState &state: states) {
+        state = PropagateJ2(state, seconds);
     }
 }

@@ -248,11 +248,11 @@ struct Renderer {
     VkPipeline spherePipeline = VK_NULL_HANDLE;
     VkPipeline linePipeline = VK_NULL_HANDLE;
 
-    // Satellite positions as vec4 in world space, rewritten every frame.
+    // Markers as vec4 in world space, satellites rewritten every frame.
     VkBuffer satelliteBuffer = VK_NULL_HANDLE;
     VkDeviceMemory satelliteMemory = VK_NULL_HANDLE;
     VkDeviceAddress satelliteAddress = 0;
-    F32 *satellitePositions = nullptr;
+    F32 (*satellitePositions)[4] = nullptr; // kMarkerCount
     VkPipelineLayout satelliteLayout = VK_NULL_HANDLE;
     VkPipeline satellitePipeline = VK_NULL_HANDLE;
 
@@ -260,7 +260,7 @@ struct Renderer {
     VkBuffer linkBuffer = VK_NULL_HANDLE;
     VkDeviceMemory linkMemory = VK_NULL_HANDLE;
     VkDeviceAddress linkAddress = 0;
-    F32 *linkPoints = nullptr;
+    F32 (*linkPoints)[2][4] = nullptr; // kMaxLinks
     VkPipeline linkPipeline = VK_NULL_HANDLE;
 };
 
@@ -620,8 +620,8 @@ static void *CreateMappedBuffer(const U64 size, VkBuffer &buffer, VkDeviceMemory
 
 static void CreateVertexBuffer() {
     // Expand every ring into line segments straight into the mapped buffer.
-    U32 *dst = static_cast<U32 *>(CreateMappedBuffer(kVertexBufferSize, r.vertexBuffer, r.vertexMemory,
-                                                     r.vertexAddress));
+    U32 (&dst)[kSegmentPointCount] = *static_cast<U32 (*)[kSegmentPointCount]>(
+        CreateMappedBuffer(kVertexBufferSize, r.vertexBuffer, r.vertexMemory, r.vertexAddress));
     U32 written = 0;
     for (const BorderRing &ring: kBorderRings) {
         for (U32 i = ring.first; i + 1 < ring.first + ring.count; ++i) {
@@ -634,13 +634,13 @@ static void CreateVertexBuffer() {
 }
 
 static void CreateSatelliteBuffer() {
-    r.satellitePositions = static_cast<F32 *>(CreateMappedBuffer(kSatelliteBufferSize, r.satelliteBuffer,
-                                                                 r.satelliteMemory, r.satelliteAddress));
-    r.linkPoints = static_cast<F32 *>(CreateMappedBuffer(kLinkBufferSize, r.linkBuffer, r.linkMemory,
-                                                         r.linkAddress));
+    r.satellitePositions = static_cast<F32 (*)[4]>(CreateMappedBuffer(kSatelliteBufferSize, r.satelliteBuffer,
+                                                                      r.satelliteMemory, r.satelliteAddress));
+    r.linkPoints = static_cast<F32 (*)[2][4]>(CreateMappedBuffer(kLinkBufferSize, r.linkBuffer, r.linkMemory,
+                                                                 r.linkAddress));
 }
 
-static void WriteMarker(F32 *const dst, const Vec3d ecef, const F32 kind) {
+static void WriteMarker(F32 (&dst)[4], const Vec3d ecef, const F32 kind) {
     const Point3 p = WorldFromEcef(ecef);
     dst[0] = p.xyz.x;
     dst[1] = p.xyz.y;
@@ -651,7 +651,7 @@ static void WriteMarker(F32 *const dst, const Vec3d ecef, const F32 kind) {
 // Stations never move in ECEF, so their markers are written once.
 static void WriteStationMarkers() {
     for (U32 i = 0; i < kStationCount; ++i) {
-        WriteMarker(r.satellitePositions + 4 * (kSatelliteCount + i), Support(groundStations[i].horizon).xyz, 1.0f);
+        WriteMarker(r.satellitePositions[kSatelliteCount + i], Support(groundStations[i].horizon).xyz, 1.0f);
     }
 }
 
@@ -1050,11 +1050,11 @@ static bool DrawFrame() {
 
     // The fence guarantees the GPU has finished reading last frame's positions.
     for (U32 i = 0; i < kSatelliteCount; ++i) {
-        WriteMarker(r.satellitePositions + 4 * i, satelliteStates[i].position, 0.0f);
+        WriteMarker(r.satellitePositions[i], satelliteStates[i].position, 0.0f);
     }
     for (U32 i = 0; i < linkCount; ++i) {
-        WriteMarker(r.linkPoints + 8 * i, Support(groundStations[links[i].station].horizon).xyz, 0.0f);
-        WriteMarker(r.linkPoints + 8 * i + 4, satelliteStates[links[i].satellite].position, 0.0f);
+        WriteMarker(r.linkPoints[i][0], Support(groundStations[links[i].station].horizon).xyz, 0.0f);
+        WriteMarker(r.linkPoints[i][1], satelliteStates[links[i].satellite].position, 0.0f);
     }
 
     U32 image;
@@ -1262,7 +1262,7 @@ int main() {
         simulationClock = now;
         const F64 simulatedSeconds = realSeconds * TimeRate();
         simulationSeconds += simulatedSeconds;
-        PropagateConstellation(satelliteStates, kSatelliteCount, simulatedSeconds);
+        PropagateConstellation(satelliteStates, simulatedSeconds);
         linkCount = FindLinks(groundStations, satelliteStates, links);
         frameUtcTicks = simulationStartTicks + static_cast<U64>(simulationSeconds * static_cast<F64>(kTicksPerSecond));
         if (DrawFrame()) {

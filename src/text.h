@@ -20,6 +20,7 @@ constexpr F32 kLineHeight = 24.0f;
 constexpr F32 kFpsPanelWidth = 132.0f;
 constexpr F32 kFpsPanelHeight = 32.0f;
 constexpr F32 kHoverOffset = 16.0f; // from the cursor to the hover label
+constexpr U32 kHoverLabelBytes = 256;
 // Marks quads that text.frag fills solid, for panels. Bit 15 of the band
 // maxima word, which Slug glyph data leaves zero.
 constexpr U32 kTextSolidFlag = 0x8000;
@@ -53,17 +54,29 @@ static_assert(kTextMaxQuads * 4 <= 65536);
 constexpr U64 kFontCurveBytes = sizeof(SlugFont::curves);
 constexpr U64 kFontBandBytes = sizeof(SlugFont::bands);
 constexpr U64 kFontBufferSize = kFontCurveBytes + kFontBandBytes;
-constexpr U64 kTextIndexOffset = kTextMaxQuads * 4 * sizeof(TextVertex);
-constexpr U64 kTextUploadOffset = kTextIndexOffset + kTextMaxQuads * 6 * sizeof(U16);
-constexpr U64 kTextBufferSize = kTextUploadOffset + kFontBufferSize;
+
+// The host-visible text buffer: quad vertices and indices, then the staging
+// area the font is uploaded from, laid out like the device-local font buffer.
+struct TextHostBuffer {
+    TextVertex quads[kTextMaxQuads][4];
+    U16 quadIndices[kTextMaxQuads][6];
+    F32 curves[kSlugMaxCurveTexels][4];
+    U32 bands[kSlugMaxBandEntries][2];
+};
+
+constexpr U64 kTextIndexOffset = offsetof(TextHostBuffer, quadIndices);
+constexpr U64 kTextUploadOffset = offsetof(TextHostBuffer, curves);
+constexpr U64 kTextBufferSize = sizeof(TextHostBuffer);
 static_assert(kTextUploadOffset % 16 == 0);
+static_assert(offsetof(TextHostBuffer, bands) == kTextUploadOffset + kFontCurveBytes);
+static_assert(kTextBufferSize == kTextUploadOffset + kFontBufferSize);
 
 struct TextRenderer {
-    // Host-visible: vertices, quad indices, then the font upload staging area.
+    // Host-visible, mapped for the program's lifetime.
     VkBuffer buffer;
     VkDeviceMemory bufferMemory;
     VkDeviceAddress address;
-    TextVertex *vertices;
+    TextHostBuffer *host;
     // Device-local: curve texels, then band entries.
     VkBuffer fontBuffer;
     VkDeviceMemory fontMemory;
@@ -77,22 +90,22 @@ struct TextRenderer {
 
 static TextRenderer textRenderer;
 static SlugFont slugFont;
+// Only used while building slugFont.
+static SlugScratch slugScratch;
 
 // Copies the font from the staging area into device-local memory, where every
 // text pixel reads it many times per frame.
-static void UploadFont(U8 *const staging) {
+static void UploadFont(TextHostBuffer &host) {
     const U64 curveBytes = slugFont.curveTexelCount * sizeof(slugFont.curves[0]);
     const U64 bandBytes = slugFont.bandEntryCount * sizeof(slugFont.bands[0]);
-    F32 (*const curves)[4] = reinterpret_cast<F32 (*)[4]>(staging);
     for (U32 i = 0; i < slugFont.curveTexelCount; ++i) {
         for (U32 j = 0; j < 4; ++j) {
-            curves[i][j] = slugFont.curves[i][j];
+            host.curves[i][j] = slugFont.curves[i][j];
         }
     }
-    U32 (*const bands)[2] = reinterpret_cast<U32 (*)[2]>(staging + kFontCurveBytes);
     for (U32 i = 0; i < slugFont.bandEntryCount; ++i) {
-        bands[i][0] = slugFont.bands[i][0];
-        bands[i][1] = slugFont.bands[i][1];
+        host.bands[i][0] = slugFont.bands[i][0];
+        host.bands[i][1] = slugFont.bands[i][1];
     }
 
     const VkBufferCreateInfo bufferInfo = {
@@ -167,7 +180,7 @@ static F32 UiPixels(const F32 value) {
 }
 
 static void InitText() {
-    BuildSlugFont(slugFont);
+    BuildSlugFont(slugFont, slugScratch);
 
     const VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -194,20 +207,19 @@ static void InitText() {
     VK_CHECK(vkBindBufferMemory(r.device, textRenderer.buffer, textRenderer.bufferMemory, 0));
     void *mapped;
     VK_CHECK(vkMapMemory(r.device, textRenderer.bufferMemory, 0, kTextBufferSize, 0, &mapped));
-    textRenderer.vertices = static_cast<TextVertex *>(mapped);
+    textRenderer.host = static_cast<TextHostBuffer *>(mapped);
     const VkBufferDeviceAddressInfo addressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = textRenderer.buffer,
     };
     textRenderer.address = vkGetBufferDeviceAddress(r.device, &addressInfo);
-    U16 *const indices = reinterpret_cast<U16 *>(static_cast<U8 *>(mapped) + kTextIndexOffset);
     constexpr U16 kCorners[6] = {0, 1, 2, 2, 1, 3};
     for (U32 i = 0; i < kTextMaxQuads; ++i) {
         for (U32 j = 0; j < 6; ++j) {
-            indices[i * 6 + j] = static_cast<U16>(i * 4 + kCorners[j]);
+            textRenderer.host->quadIndices[i][j] = static_cast<U16>(i * 4 + kCorners[j]);
         }
     }
-    UploadFont(static_cast<U8 *>(mapped) + kTextUploadOffset);
+    UploadFont(*textRenderer.host);
 
     // Both stages read push constants: the vertex shader the vertex buffer,
     // the fragment shader the curve and band buffers.
@@ -244,19 +256,15 @@ static F32 AdvancePixels(const SlugGlyph &glyph, const F32 pixelsPerEm) {
     return RoundPixels(glyph.advance * pixelsPerEm);
 }
 
-static TextVertex *NextTextQuad() {
-    return textRenderer.quadCount == kTextMaxQuads ? nullptr : textRenderer.vertices + 4 * textRenderer.quadCount++;
-}
-
 // One quad over the glyph's em-space bounds, origin at (penX, baseline) in
 // pixels. Corners go top left, top right, bottom left, bottom right; text.vert
 // dilates them outward by half a pixel along their normals.
 static bool AppendGlyph(const SlugGlyph &glyph, const F32 penX, const F32 baseline, const F32 pixelsPerEm,
                         const F32 (&color)[4]) {
-    TextVertex *const vertices = NextTextQuad();
-    if (!vertices) {
+    if (textRenderer.quadCount == kTextMaxQuads) {
         return false;
     }
+    TextVertex (&vertices)[4] = textRenderer.host->quads[textRenderer.quadCount++];
     const F32 emPerPixel = 1.0f / pixelsPerEm;
     for (U32 corner = 0; corner < 4; ++corner) {
         const bool right = (corner & 1) != 0;
@@ -282,10 +290,10 @@ static bool AppendGlyph(const SlugGlyph &glyph, const F32 penX, const F32 baseli
 
 // A solid rectangle in the text batch, for panels behind text.
 static bool AppendSolidQuad(const F32 x, const F32 y, const F32 width, const F32 height, const F32 (&color)[4]) {
-    TextVertex *const vertices = NextTextQuad();
-    if (!vertices) {
+    if (textRenderer.quadCount == kTextMaxQuads) {
         return false;
     }
+    TextVertex (&vertices)[4] = textRenderer.host->quads[textRenderer.quadCount++];
     for (U32 corner = 0; corner < 4; ++corner) {
         vertices[corner] = {
             .pos = {(corner & 1) != 0 ? x + width : x, (corner & 2) != 0 ? y + height : y, 0.0f, 0.0f},
@@ -394,7 +402,7 @@ static void AppendClock() {
 // Writes a satellite's or station's ECEF state and WGS 84 position. Stations
 // are fixed to the Earth, so they pass no velocity and get no velocity line.
 // Latitude and longitude are signed degrees: negative is south or west.
-static void FormatStateLabel(char *const label, const U32 size, const char *const name, const U32 index,
+static void FormatStateLabel(char (&label)[kHoverLabelBytes], const char *const name, const U32 index,
                              const Vec3d position, const Vec3d *const velocity) {
     const Geodetic geodetic = GeodeticFromEcef(position);
     char velocityLine[64] = "";
@@ -402,7 +410,7 @@ static void FormatStateLabel(char *const label, const U32 size, const char *cons
         snprintf(velocityLine, sizeof(velocityLine), "ECEF vel %11.5f %11.5f %11.5f km/s\n",
                  velocity->x / 1000.0, velocity->y / 1000.0, velocity->z / 1000.0);
     }
-    snprintf(label, size,
+    snprintf(label, sizeof(label),
              "%s #%u\n"
              "ECEF pos %11.3f %11.3f %11.3f km\n"
              "%s"
@@ -420,12 +428,12 @@ static void AppendHoverLabel() {
     if (hover.kind == kHoverNone) {
         return;
     }
-    char label[256];
+    char label[kHoverLabelBytes];
     if (hover.kind == kHoverSatellite) {
         const OrbitState &state = satelliteStates[hover.index];
-        FormatStateLabel(label, sizeof(label), "Satellite", hover.index, state.position, &state.velocity);
+        FormatStateLabel(label, "Satellite", hover.index, state.position, &state.velocity);
     } else if (hover.kind == kHoverStation) {
-        FormatStateLabel(label, sizeof(label), "Ground station", hover.index,
+        FormatStateLabel(label, "Ground station", hover.index,
                          Support(groundStations[hover.index].horizon).xyz, nullptr);
     } else {
         snprintf(label, sizeof(label), "Link: ground station #%u to satellite #%u",

@@ -14,3 +14,6 @@
 - For functions, use upper camel case, i.e., MyFunction
 - For variables, use lower camel case, i.e., myVariable
 - Always use curly braces for loops and if statements
+# Misc
+- Do not use static local variables in functions or mutate global static variables, pass in scratch via the arguments if too big for the stack
+- Use fixed-size array references when possible instead of pointers

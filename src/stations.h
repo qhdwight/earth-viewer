@@ -68,7 +68,7 @@ inline bool IsOnLand(const F32 longitude, const F32 latitude) {
 
 // Rejection sampling: uniform longitude and latitude, kept with probability
 // cos(latitude) so stations are uniform over the surface, then kept only on land.
-inline void InitGroundStations(GroundStation *const stations) {
+inline void InitGroundStations(GroundStation (&stations)[kStationCount]) {
     U64 random = kStationSeed;
     U32 count = 0;
     while (count < kStationCount) {
@@ -92,7 +92,8 @@ inline void InitGroundStations(GroundStation *const stations) {
 
 // Every station and satellite pair where the satellite is above the station's
 // minimum elevation. Returns the number of links written.
-inline U32 FindLinks(const GroundStation *const stations, const OrbitState *const satellites, Link *const links) {
+inline U32 FindLinks(const GroundStation (&stations)[kStationCount], const OrbitState (&satellites)[kSatelliteCount],
+                     Link (&links)[kMaxLinks]) {
     F64 radiusSquared[kSatelliteCount];
     for (U32 satellite = 0; satellite < kSatelliteCount; ++satellite) {
         radiusSquared[satellite] = Dot(satellites[satellite].position, satellites[satellite].position);

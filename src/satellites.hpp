@@ -1,8 +1,8 @@
 #pragma once
 
-#include "src/core.h"
-#include "src/j2.h"
-#include "src/math.h"
+#include "src/core.hpp"
+#include "src/j2.hpp"
+#include "src/math.hpp"
 
 // A synthetic constellation of circular 300 km orbits, laid out as Walker
 // delta shells. Each shell has evenly spaced planes, each plane carries

@@ -19,7 +19,7 @@ layout(push_constant) uniform PushConstants {
 const vec3 kLinkColor = vec3(0.3, 0.85, 1.0);
 const float kLinkIntensity = 0.6;
 const vec3 kLinkGlowColor = vec3(0.01, 0.1, 0.16);
-const float kLinkGlowPixels = 4.0; // UI pixels; matches kLineGlowPixels in main.cc
+const float kLinkGlowPixels = 4.0; // UI pixels; matches kLineGlowPixels in main.cpp
 
 void main() {
     // Round caps and a one-pixel anti-aliased edge, as in earth.frag.

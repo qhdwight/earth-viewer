@@ -2,7 +2,7 @@
 // Copyright 2006 The Inconsolata Project Authors; SIL Open Font License 1.1, see src/LICENSE-FONT.
 #pragma once
 
-#include "src/core.h"
+#include "src/core.hpp"
 
 // Printable ASCII outlines as quadratic curves, baseline at y = 0, y up.
 // Coordinates are in half font units.

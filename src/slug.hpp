@@ -1,6 +1,6 @@
 #pragma once
 
-// The glyph outlines come from font.h, embedded in the binary and the same on
+// The glyph outlines come from font.hpp, embedded in the binary and the same on
 // every platform.
 //
 // Font data for the Slug algorithm by Eric Lengyel, "GPU-Centered Font
@@ -20,8 +20,8 @@
 // then the curve lists, each entry (curve texel, 0). A pixel only tests the
 // curves of the one horizontal and one vertical band it falls in.
 
-#include "src/core.h"
-#include "src/font.h"
+#include "src/core.hpp"
+#include "src/font.hpp"
 
 inline constexpr U32 kSlugFirstChar = 32;
 inline constexpr U32 kSlugGlyphCount = 95; // printable ASCII
@@ -257,7 +257,7 @@ struct SlugScratch {
 };
 
 // Builds the curve and band data for printable ASCII from the outlines
-// embedded in font.h, in em units with the baseline at y = 0 and y up.
+// embedded in font.hpp, in em units with the baseline at y = 0 and y up.
 inline void BuildSlugFont(SlugFont &font, SlugScratch &scratch) {
     static_assert(kFontFirstCharacter == kSlugFirstChar && kFontGlyphCount == kSlugGlyphCount);
     constexpr F32 kEmPerUnit = 1.0f / kFontHalfUnitsPerEm;

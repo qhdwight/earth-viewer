@@ -10,7 +10,7 @@
 #pragma once
 
 #ifndef BITARRAY_SKIP_INCLUDES
-#include "bitops.h"
+#include "bitops.hpp"
 #endif
 
 //#define ENABLE_ASSERTS

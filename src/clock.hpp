@@ -1,6 +1,6 @@
 #pragma once
 
-#include "src/core.h"
+#include "src/core.hpp"
 
 // Calendar and time-scale conversions for the clock overlay. Everything is
 // integer arithmetic on UTC seconds since 1970, valid for any time after

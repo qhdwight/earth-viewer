@@ -10,7 +10,7 @@ layout(location = 0) out vec3 rayDir;
 
 layout(push_constant) uniform PushConstants {
     Motor view; // world to camera space
-    vec4 projection; // Perspective in math.h
+    vec4 projection; // Perspective in math.hpp
 } pc;
 
 const int kVertexCount = 3;

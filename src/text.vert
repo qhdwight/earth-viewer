@@ -10,7 +10,7 @@
 // overlay, the glyph's band location is a linear buffer index, and solid
 // quads for UI panels skip dilation.
 
-// Matches TextVertex in text.h, which mirrors the reference's five attributes.
+// Matches TextVertex in text.hpp, which mirrors the reference's five attributes.
 struct TextVertex {
     vec4 pos;    // xy: position in pixels, zw: dilation normal
     vec2 em;     // em-space sample coordinates (reference tex.xy)

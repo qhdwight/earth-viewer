@@ -1,7 +1,7 @@
 """Compiles GLSL to a SPIR-V C header using the Vulkan SDK's glslangValidator."""
 
 def _glsl_header_impl(ctx):
-    out = ctx.actions.declare_file(ctx.label.name + ".h")
+    out = ctx.actions.declare_file(ctx.label.name + ".hpp")
     ctx.actions.run(
         executable = ctx.file._glslang,
         arguments = [

@@ -1,9 +1,9 @@
 #pragma once
 
-// Included after the shared Vulkan helpers in main.cc, and after slug.h.
+// Included after the shared Vulkan helpers in main.cpp, and after slug.hpp.
 //
 // Text is rendered with the Slug algorithm: glyph outlines are uploaded once
-// as quadratic curves (see slug.h), and text.frag computes each pixel's
+// as quadratic curves (see slug.hpp), and text.frag computes each pixel's
 // coverage from them directly. Each character is one quad over its glyph's
 // bounds. All storage is reserved at startup; the frame fence protects writes
 // to the persistent vertex buffer.

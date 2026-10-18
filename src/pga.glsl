@@ -1,7 +1,7 @@
 #ifndef PGA_GLSL
 #define PGA_GLSL
 
-// Rigid geometric algebra for the shaders, mirroring math.h and Eric Lengyel's
+// Rigid geometric algebra for the shaders, mirroring math.hpp and Eric Lengyel's
 // conventions at rigidgeometricalgebra.org. A vec3 is a unitized point or a
 // direction, as the name says. A plane is a vec4: normal n, the weight, in xyz
 // and the bulk in w, holding the points p where dot(n, p) + w = 0.
@@ -12,7 +12,7 @@ struct Line {
     vec3 m;
 };
 
-// A motor, laid out as Motor3 in math.h: v holds e41, e42, e43 and the
+// A motor, laid out as Motor3 in math.hpp: v holds e41, e42, e43 and the
 // antiscalar, the rotation; m holds e23, e31, e12 and the scalar, the
 // translation.
 struct Motor {
@@ -53,7 +53,7 @@ vec3 TransformDirection(const Motor q, const vec3 d) {
     return d + 2.0 * (q.v.w * a + cross(q.v.xyz, a));
 }
 
-// Clip coordinates of a camera-space point, as Project in math.h. projection
+// Clip coordinates of a camera-space point, as Project in math.hpp. projection
 // holds Perspective: x and y scales and the near plane distance.
 vec4 Project(const vec4 projection, const vec3 p) {
     return vec4(projection.x * p.x, projection.y * p.y, -p.z - projection.z, -p.z);

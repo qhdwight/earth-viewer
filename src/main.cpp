@@ -24,27 +24,27 @@
 
 #include <vulkan/vulkan.h>
 
-#include "src/core.h"
-#include "src/platform.h"
-#include "src/array/fast_array_ops.h"
-#include "src/bit/bitarray.h"
-#include "src/borders.h"
-#include "src/earth_frag.h"
-#include "src/earth_vert.h"
-#include "src/geodetic.h"
-#include "src/icon.h"
-#include "src/link_frag.h"
-#include "src/link_vert.h"
-#include "src/math.h"
-#include "src/satellite_frag.h"
-#include "src/satellite_vert.h"
-#include "src/satellites.h"
-#include "src/stations.h"
-#include "src/sphere_frag.h"
-#include "src/sphere_vert.h"
-#include "src/sun.h"
-#include "src/text_frag.h"
-#include "src/text_vert.h"
+#include "src/core.hpp"
+#include "src/platform.hpp"
+#include "src/array/fast_array_ops.hpp"
+#include "src/bit/bitarray.hpp"
+#include "src/borders.hpp"
+#include "src/earth_frag.hpp"
+#include "src/earth_vert.hpp"
+#include "src/geodetic.hpp"
+#include "src/icon.hpp"
+#include "src/link_frag.hpp"
+#include "src/link_vert.hpp"
+#include "src/math.hpp"
+#include "src/satellite_frag.hpp"
+#include "src/satellite_vert.hpp"
+#include "src/satellites.hpp"
+#include "src/stations.hpp"
+#include "src/sphere_frag.hpp"
+#include "src/sphere_vert.hpp"
+#include "src/sun.hpp"
+#include "src/text_frag.hpp"
+#include "src/text_vert.hpp"
 
 #include <cstdio>
 
@@ -447,9 +447,9 @@ static void CreateSwapchain(Renderer &r) {
 }
 
 #if defined(_WIN32)
-#include "src/platform_win32.h"
+#include "src/platform_win32.hpp"
 #elif defined(__linux__)
-#include "src/platform_linux.h"
+#include "src/platform_linux.hpp"
 #endif
 
 static void InitVulkan(Renderer &r, const Platform &platform) {
@@ -805,8 +805,8 @@ static void TransitionImage(const VkCommandBuffer cmd, const VkImage image, cons
     vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
-#include "src/slug.h"
-#include "src/text.h"
+#include "src/slug.hpp"
+#include "src/text.hpp"
 
 // The camera's orientation: pitch about camera +X, then yaw about world +Y.
 // Positive yaw turns the view toward +X, a negative turn about +Y.

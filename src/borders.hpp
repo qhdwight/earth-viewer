@@ -3,7 +3,7 @@
 // edit by hand.
 #pragma once
 
-#include "src/core.h"
+#include "src/core.hpp"
 
 // Longitude and latitude are stored in units of 1/180 degree.
 inline constexpr I32 kBorderUnitsPerDegree = 180;

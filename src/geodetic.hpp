@@ -1,10 +1,10 @@
 #pragma once
 
-#include "src/core.h"
-#include "src/j2.h"
-#include "src/math.h"
+#include "src/core.hpp"
+#include "src/j2.hpp"
+#include "src/math.hpp"
 
-// Geodetic coordinates on the WGS 84 ellipsoid. kEarthRadius in j2.h is its
+// Geodetic coordinates on the WGS 84 ellipsoid. kEarthRadius in j2.hpp is its
 // semi-major axis.
 inline constexpr F64 kWgs84Flattening = 1.0 / 298.257223563;
 inline constexpr F64 kDegreesPerRadian = 180.0 / kPi64;

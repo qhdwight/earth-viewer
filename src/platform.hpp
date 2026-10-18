@@ -2,12 +2,12 @@
 
 #include <vulkan/vulkan_core.h>
 
-#include "src/core.h"
+#include "src/core.hpp"
 
-// The boundary between main.cc and the platform layer: the window, input,
-// clocks and Vulkan surface. platform_win32.h and platform_linux.h
-// implement it inside main.cc's translation unit; platform_macos.mm is its own
-// Objective-C++ one. The platform layer keeps no state of its own: main.cc
+// The boundary between main.cpp and the platform layer: the window, input,
+// clocks and Vulkan surface. platform_win32.hpp and platform_linux.hpp
+// implement it inside main.cpp's translation unit; platform_macos.mm is its own
+// Objective-C++ one. The platform layer keeps no state of its own: main.cpp
 // owns a Platform and an Input and passes them in.
 
 constexpr U32 kMaxKeys = 256;
@@ -17,7 +17,7 @@ constexpr U32 kKeyShift = 0x10;
 constexpr U32 kWindowWidth = 1280;
 constexpr U32 kWindowHeight = 720;
 
-// Everything the platform layer reports to main.cc.
+// Everything the platform layer reports to main.cpp.
 struct Input {
     bool keyDown[kMaxKeys];
     bool dragging;
@@ -69,7 +69,7 @@ struct Platform {
 struct Platform;
 #endif
 
-// Defined in main.cc.
+// Defined in main.cpp.
 [[noreturn]] void Die(char const *what, I64 code);
 
 // ] steps the simulation rate up and [ steps it down.

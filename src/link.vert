@@ -16,7 +16,7 @@ layout(buffer_reference, std430) readonly buffer Segments {
     vec4 points[];
 };
 
-// Same layout as earth.vert; main.cc pushes link widths and this buffer.
+// Same layout as earth.vert; main.cpp pushes link widths and this buffer.
 layout(push_constant) uniform PushConstants {
     Motor view;
     vec4 projection;

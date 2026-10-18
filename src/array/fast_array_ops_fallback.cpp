@@ -1,4 +1,4 @@
-// Portable C++ versions of every routine in fast_array_ops.h, for targets
+// Portable C++ versions of every routine in fast_array_ops.hpp, for targets
 // where the AVX2 assembly cannot run, such as Apple silicon. BUILD.bazel
 // compiles exactly one of the assembly or this file, so the symbols are the
 // same. The behavior matches the assembly, including empty arrays:
@@ -15,7 +15,7 @@
 // NaN inputs to min and max are not handled the way the AVX2 min and max
 // instructions handle them; neither version promises anything for NaN.
 
-#include "fast_array_ops.h"
+#include "fast_array_ops.hpp"
 
 #include <cstdint>
 

@@ -1,4 +1,4 @@
-// The platform layer for macOS (see platform.h), in Objective-C++ with ARC.
+// The platform layer for macOS (see platform.hpp), in Objective-C++ with ARC.
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -8,9 +8,9 @@
 #define VK_USE_PLATFORM_METAL_EXT
 #include <vulkan/vulkan.h>
 
-#include "src/clock.h"
-#include "src/icon.h"
-#include "src/platform.h"
+#include "src/clock.hpp"
+#include "src/icon.hpp"
+#include "src/platform.hpp"
 
 constexpr unichar kCharEscape = 27;
 constexpr NSInteger kMiddleButton = 2;
@@ -33,7 +33,7 @@ static CAMetalLayer *PlatformLayer(const Platform &platform) {
     return (__bridge CAMetalLayer *)platform.layer;
 }
 
-// Closing only sets a flag; main.cc sees it and exits its loop.
+// Closing only sets a flag; main.cpp sees it and exits its loop.
 @interface EarthViewerWindowDelegate : NSObject <NSWindowDelegate> {
 @public
     Platform *platform;
@@ -48,7 +48,7 @@ static CAMetalLayer *PlatformLayer(const Platform &platform) {
 @end
 
 // Follows the window's size and backing scale. A changed drawable size asks
-// main.cc for a new swapchain, since the surface reports the drawable size.
+// main.cpp for a new swapchain, since the surface reports the drawable size.
 static void UpdateDrawableSize(Platform &platform, Input &input) {
     CAMetalLayer *const layer = PlatformLayer(platform);
     const CGFloat scale = PlatformWindow(platform).backingScaleFactor;
@@ -128,7 +128,7 @@ VkSurfaceKHR CreateSurface(const Platform &platform, const VkInstance instance) 
 }
 
 // The first UTF-16 unit of a key's characters, upper-cased for ASCII letters
-// so key state matches main.cc's 'W', 'A', ... indices.
+// so key state matches main.cpp's 'W', 'A', ... indices.
 static unichar KeyCharacter(NSString *const characters) {
     if (characters.length == 0) {
         return 0;

@@ -17,7 +17,7 @@ layout(buffer_reference, std430) readonly buffer Positions {
 
 layout(push_constant) uniform SatellitePush {
     Motor view; // world to camera space
-    vec4 projection; // Perspective in math.h
+    vec4 projection; // Perspective in math.hpp
     vec4 cameraPos;
     vec4 sunDirection;
     // x: dot radius in world units, y: world units per UI pixel per unit of

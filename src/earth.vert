@@ -12,14 +12,14 @@ layout(location = 1) out vec3 ribbon;
 
 // Each point packs a longitude (low 16 bits) and a latitude (high 16 bits)
 // as two's complement integers in units of 1/180 degree. Matches
-// PackBorderPoint in main.cc. Points come in pairs, one pair per segment.
+// PackBorderPoint in main.cpp. Points come in pairs, one pair per segment.
 layout(buffer_reference, std430) readonly buffer VertexBuffer {
     uint points[];
 };
 
 layout(push_constant) uniform PushConstants {
     Motor view; // world to camera space
-    vec4 projection; // Perspective in math.h
+    vec4 projection; // Perspective in math.hpp
     vec4 cameraPos;
     // x: half width in world units, y: minimum half width per unit of view
     // depth, z: padding for anti-aliasing and glow per unit of view depth.

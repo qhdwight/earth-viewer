@@ -1,7 +1,7 @@
 """Converts Natural Earth country polygons and state boundary lines (GeoJSON)
-into src/borders.h.
+into src/borders.hpp.
 
-Usage: python tools/gen_borders.py <ne_50m_admin_0_countries.geojson>            <ne_50m_admin_1_states_provinces_lines.geojson> src/borders.h
+Usage: python tools/gen_borders.py <ne_50m_admin_0_countries.geojson>            <ne_50m_admin_1_states_provinces_lines.geojson> src/borders.hpp
 
 Source data (public domain):
 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson
@@ -69,7 +69,7 @@ def main(countries_src, states_src, dst):
         "// edit by hand.",
         "#pragma once",
         "",
-        '#include "src/core.h"',
+        '#include "src/core.hpp"',
         "",
         "// Longitude and latitude are stored in units of 1/180 degree.",
         f"inline constexpr I32 kBorderUnitsPerDegree = {UNITS_PER_DEGREE};",

@@ -1,13 +1,13 @@
-"""Converts printable ASCII from a TrueType font into src/font.h.
+"""Converts printable ASCII from a TrueType font into src/font.hpp.
 
-Usage: python tools/gen_font.py Inconsolata.ttf src/font.h
+Usage: python tools/gen_font.py Inconsolata.ttf src/font.hpp
 
 Needs fontTools. The font is Inconsolata 3.001 by the Inconsolata Project
 Authors, under the SIL Open Font License 1.1 (see src/LICENSE-FONT):
 https://raw.githubusercontent.com/google/fonts/main/ofl/inconsolata/Inconsolata%5Bwdth%2Cwght%5D.ttf
 
 It is a variable font; its glyf table holds the default instance, Regular.
-Each glyph becomes contours of quadratic curves, the input slug.h builds the
+Each glyph becomes contours of quadratic curves, the input slug.hpp builds the
 Slug curve and band data from at startup. TrueType's runs of off-curve points
 are split into single curves at their implied midpoints, composite glyphs are
 flattened, and every contour is closed. Coordinates are in half font units,
@@ -89,7 +89,7 @@ def main(src, dst):
         "// Copyright 2006 The Inconsolata Project Authors; SIL Open Font License 1.1, see src/LICENSE-FONT.",
         "#pragma once",
         "",
-        '#include "src/core.h"',
+        '#include "src/core.hpp"',
         "",
         "// Printable ASCII outlines as quadratic curves, baseline at y = 0, y up.",
         "// Coordinates are in half font units.",

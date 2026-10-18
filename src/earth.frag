@@ -19,7 +19,7 @@ layout(push_constant) uniform PushConstants {
 // stacking into blobs where many segments meet.
 const vec3 kLineColor = vec3(0.35, 1.0, 0.3);
 const vec3 kLineGlowColor = vec3(0.02, 0.45, 0.06);
-const float kLineGlowPixels = 4.0; // UI pixels; matches kLineGlowPixels in main.cc
+const float kLineGlowPixels = 4.0; // UI pixels; matches kLineGlowPixels in main.cpp
 
 void main() {
     // Round caps: inside the segment the distance is just the offset from the

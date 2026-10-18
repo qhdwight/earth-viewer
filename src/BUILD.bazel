@@ -3,20 +3,20 @@ load("//third_party/vulkan:glsl.bzl", "glsl_header")
 
 cc_library(
     name = "core",
-    hdrs = ["core.h"],
+    hdrs = ["core.hpp"],
     visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "math",
-    hdrs = ["math.h"],
+    hdrs = ["math.hpp"],
     visibility = ["//visibility:public"],
     deps = [":core"],
 )
 
 cc_library(
     name = "j2",
-    hdrs = ["j2.h"],
+    hdrs = ["j2.hpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":core",
@@ -26,7 +26,7 @@ cc_library(
 
 cc_library(
     name = "platform",
-    hdrs = ["platform.h"],
+    hdrs = ["platform.hpp"],
     deps = [
         ":core",
         "@vulkan",
@@ -36,8 +36,8 @@ cc_library(
 objc_library(
     name = "platform_macos",
     srcs = [
-        "clock.h",
-        "icon.h",
+        "clock.hpp",
+        "icon.hpp",
         "platform_macos.mm",
     ],
     copts = [
@@ -54,13 +54,13 @@ objc_library(
 
 cc_library(
     name = "platform_win32",
-    hdrs = ["platform_win32.h"],
+    hdrs = ["platform_win32.hpp"],
     visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "platform_linux",
-    hdrs = ["platform_linux.h"],
+    hdrs = ["platform_linux.hpp"],
     visibility = ["//visibility:public"],
 )
 
@@ -139,17 +139,17 @@ glsl_header(
 cc_binary(
     name = "app",
     srcs = [
-        "borders.h",
-        "clock.h",
-        "font.h",
-        "geodetic.h",
-        "icon.h",
-        "main.cc",
-        "satellites.h",
-        "slug.h",
-        "stations.h",
-        "sun.h",
-        "text.h",
+        "borders.hpp",
+        "clock.hpp",
+        "font.hpp",
+        "geodetic.hpp",
+        "icon.hpp",
+        "main.cpp",
+        "satellites.hpp",
+        "slug.hpp",
+        "stations.hpp",
+        "sun.hpp",
+        "text.hpp",
         ":earth_frag",
         ":earth_vert",
         ":link_frag",

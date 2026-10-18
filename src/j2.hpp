@@ -1,7 +1,7 @@
 #pragma once
 
-#include "src/core.h"
-#include "src/math.h"
+#include "src/core.hpp"
+#include "src/math.hpp"
 
 // Orbit propagation in the Earth-fixed frame, ECEF: x through the prime
 // meridian, y through 90 degrees east, z through the north pole. Units are

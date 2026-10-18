@@ -3,7 +3,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 # The routines are hand-written AVX2 assembly: MASM for Windows (assembled by
 # ml64 through the MSVC toolchain) and NASM syntax for Linux. The Linux
 # sources need `nasm` on PATH; they are not GAS-compatible. Every other target,
-# such as Apple silicon, compiles fast_array_ops_fallback.cc instead: plain C++
+# such as Apple silicon, compiles fast_array_ops_fallback.cpp instead: plain C++
 # with the same symbols and the same results.
 LINUX_ASM = glob(["Linux/*.s"])
 
@@ -39,8 +39,8 @@ cc_library(
     srcs = select({
         ":windows_x86_64": glob(["Windows/*.asm"]),
         ":linux_x86_64": [":linux_objects"],
-        "//conditions:default": ["fast_array_ops_fallback.cc"],
+        "//conditions:default": ["fast_array_ops_fallback.cpp"],
     }),
-    hdrs = ["fast_array_ops.h"],
+    hdrs = ["fast_array_ops.hpp"],
     visibility = ["//visibility:public"],
 )

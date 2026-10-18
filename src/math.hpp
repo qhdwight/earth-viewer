@@ -4,7 +4,7 @@
 #include <immintrin.h>
 #endif
 
-#include "src/core.h"
+#include "src/core.hpp"
 
 struct Vec3 {
     F32 x, y, z;

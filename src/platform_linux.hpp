@@ -1,6 +1,6 @@
 #pragma once
 
-// The platform layer for Linux (see platform.h), compiled as part of main.cc.
+// The platform layer for Linux (see platform.hpp), compiled as part of main.cpp.
 // It speaks X11 through Xlib, so Wayland sessions run it under XWayland.
 
 char const *const kSurfaceExtensionName = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;

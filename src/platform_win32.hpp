@@ -1,6 +1,6 @@
 #pragma once
 
-// The platform layer for Windows (see platform.h), compiled as part of main.cc.
+// The platform layer for Windows (see platform.hpp), compiled as part of main.cpp.
 
 char const *const kSurfaceExtensionName = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
 constexpr wchar_t const *kClassName = L"earth-viewer";

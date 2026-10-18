@@ -1,10 +1,10 @@
 #pragma once
 
-#include "src/borders.h"
-#include "src/core.h"
-#include "src/j2.h"
-#include "src/math.h"
-#include "src/satellites.h"
+#include "src/borders.hpp"
+#include "src/core.hpp"
+#include "src/j2.hpp"
+#include "src/math.hpp"
+#include "src/satellites.hpp"
 
 // Ground stations at random land locations, and the links between them and
 // the satellites they can see.

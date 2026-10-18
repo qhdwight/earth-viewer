@@ -1,8 +1,8 @@
 #pragma once
 
-#include "src/clock.h"
-#include "src/core.h"
-#include "src/math.h"
+#include "src/clock.hpp"
+#include "src/core.hpp"
+#include "src/math.hpp"
 
 // The J2000.0 epoch, 2000-01-01 12:00 UTC, is 145731 and a half days after
 // the FILETIME epoch.

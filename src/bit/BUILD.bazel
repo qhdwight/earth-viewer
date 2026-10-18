@@ -5,8 +5,8 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "bit",
     hdrs = [
-        "bitarray.h",
-        "bitops.h",
+        "bitarray.hpp",
+        "bitops.hpp",
     ],
     visibility = ["//visibility:public"],
 )

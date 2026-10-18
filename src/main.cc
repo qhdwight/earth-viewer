@@ -10,7 +10,6 @@
 #include <windows.h>
 #define VK_USE_PLATFORM_WIN32_KHR
 #elif defined(__APPLE__)
-#include <CoreText/CoreText.h>
 #include <unistd.h>
 #elif defined(__linux__)
 #include <X11/Xlib.h>

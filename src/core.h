@@ -34,6 +34,7 @@ constexpr I16 Min(const I16 a, const I16 b) { return a < b ? a : b; }
 constexpr I32 Min(const I32 a, const I32 b) { return a < b ? a : b; }
 constexpr I64 Min(const I64 a, const I64 b) { return a < b ? a : b; }
 constexpr F32 Min(const F32 a, const F32 b) { return a < b ? a : b; }
+constexpr F64 Min(const F64 a, const F64 b) { return a < b ? a : b; }
 
 constexpr U8 Max(const U8 a, const U8 b) { return a > b ? a : b; }
 constexpr U16 Max(const U16 a, const U16 b) { return a > b ? a : b; }
@@ -44,10 +45,14 @@ constexpr I16 Max(const I16 a, const I16 b) { return a > b ? a : b; }
 constexpr I32 Max(const I32 a, const I32 b) { return a > b ? a : b; }
 constexpr I64 Max(const I64 a, const I64 b) { return a > b ? a : b; }
 constexpr F32 Max(const F32 a, const F32 b) { return a > b ? a : b; }
+constexpr F64 Max(const F64 a, const F64 b) { return a > b ? a : b; }
 
 constexpr F32 Abs(const F32 x) { return x < 0.0f ? -x : x; }
 constexpr F64 Abs(const F64 x) { return x < 0.0 ? -x : x; }
 constexpr F32 Clamp(const F32 x, const F32 lo, const F32 hi) { return Min(Max(x, lo), hi); }
+
+constexpr bool IsNan(const F32 x) { return __builtin_isnan(x); }
+constexpr bool IsNan(const F64 x) { return __builtin_isnanl(x); }
 
 template<typename T, U64 N>
 constexpr U64 Count(const T (&)[N]) {
